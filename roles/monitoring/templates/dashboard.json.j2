@@ -1,0 +1,23 @@
+{
+  "uid": "{{ item.uid }}",
+  "title": {{ item.title | to_json }},
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": { "list": [
+{% if item.instance_var %}
+    { "name": "instance", "type": "query", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "query": "label_values(node_uname_info, instance)", "includeAll": true, "multi": true,
+      "allValue": ".*", "refresh": 2, "current": { "text": "All", "value": "$__all" } }
+{% endif %}
+  ] },
+  "panels": [
+{% for p in item.panels %}
+    { "id": {{ loop.index }}, "type": "{{ p.type | default('timeseries') }}", "title": {{ p.title | to_json }},
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": {{ (loop.index0 % 2) * 12 }}, "y": {{ (loop.index0 // 2) * 8 }} },
+      "fieldConfig": { "defaults": { "unit": "{{ p.unit | default('short') }}" }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": {{ p.expr | to_json }}, "legendFormat": {{ (p.legend | default(default_legend)) | to_json }} } ] }{{ "," if not loop.last }}
+{% endfor %}
+  ]
+}

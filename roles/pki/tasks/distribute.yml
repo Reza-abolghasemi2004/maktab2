@@ -1,0 +1,28 @@
+---
+- name: Trust private CA system-wide
+  ansible.builtin.copy:
+    src: "{{ pki_dir }}/ca.crt"
+    dest: /usr/local/share/ca-certificates/maktab-ca.crt
+    mode: "0644"
+  notify: update ca certs
+- ansible.builtin.file: { path: "{{ pki_remote_dir }}", state: directory, mode: "0750" }
+
+
+- name: Wildcard certificate (fullchain) and key
+  ansible.builtin.copy:
+    content: "{{ lookup('ansible.builtin.file', pki_dir ~ '/wildcard.crt') | trim }}\n{{ lookup('ansible.builtin.file', pki_dir ~ '/ca.crt') | trim }}\n"
+    dest: "{{ pki_remote_dir }}/fullchain.crt"
+    mode: "0644"
+
+#- name: Wildcard certificate (fullchain) and key
+#  ansible.builtin.copy:
+#    content: "{{ lookup('ansible.builtin.file', pki_dir ~ '/wildcard.crt') }}{{ lookup('ansible.builtin.file', pki_dir ~ '/ca.crt') }}"
+#    dest: "{{ pki_remote_dir }}/fullchain.crt"
+#    mode: "0644"
+
+- ansible.builtin.copy:
+    content: "{{ lookup('ansible.builtin.file', pki_dir ~ '/wildcard.key') }}"
+    dest: "{{ pki_remote_dir }}/wildcard.key"
+    mode: "0600"
+  no_log: true
+- ansible.builtin.meta: flush_handlers

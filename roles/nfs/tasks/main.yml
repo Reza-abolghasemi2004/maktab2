@@ -1,0 +1,25 @@
+---
+- name: NFS client (all K8s nodes)
+  ansible.builtin.apt: { name: nfs-common, state: present }
+
+- name: Ensure NFS exports.d directory exists
+  ansible.builtin.file:
+    path: /etc/exports.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+
+- name: NFS server (hub)
+  when: inventory_hostname in groups['edge']
+  block:
+    - ansible.builtin.apt: { name: nfs-kernel-server, state: present }
+    - ansible.builtin.file: { path: "{{ nfs_export_path }}", state: directory, mode: "0777" }
+    - name: Export only to the VPN network
+      ansible.builtin.copy:
+        dest: /etc/exports.d/maktab.exports
+        mode: "0644"
+        content: "{{ nfs_export_path }} {{ wg_network }}(rw,sync,no_subtree_check,no_root_squash)\n"
+      notify: reexport nfs
+    - ansible.builtin.service: { name: nfs-kernel-server, state: started, enabled: true }

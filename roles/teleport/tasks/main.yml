@@ -1,0 +1,45 @@
+---
+- name: Install Teleport (Community) binaries
+  ansible.builtin.shell: |
+    set -e
+    cd /tmp
+    curl -fsSL -o teleport.tgz https://cdn.teleport.dev/teleport-v{{ teleport_version }}-linux-amd64-bin.tar.gz
+    tar xzf teleport.tgz
+    cd teleport && ./install
+  args: { creates: /usr/local/bin/teleport }
+
+- name: Data dir
+  ansible.builtin.file: { path: /var/lib/teleport, state: directory, mode: "0700" }
+
+- name: Config (auth+proxy+ssh on hub, ssh node on others)
+  ansible.builtin.template:
+    src: "{{ 'teleport-server.yaml.j2' if inventory_hostname in groups['edge'] else 'teleport-node.yaml.j2' }}"
+    dest: /etc/teleport.yaml
+    mode: "0600"
+  notify: restart teleport
+
+- name: systemd unit
+  ansible.builtin.template: { src: teleport.service.j2, dest: /etc/systemd/system/teleport.service, mode: "0644" }
+  notify: restart teleport
+- ansible.builtin.systemd: { daemon_reload: true, name: teleport, enabled: true, state: started }
+- ansible.builtin.meta: flush_handlers
+
+# ───── hub only: PAM admin user ─────
+- name: Wait for Teleport auth
+  ansible.builtin.wait_for: { host: "{{ hub_ip }}", port: 3025, timeout: 90 }
+  when: inventory_hostname in groups['edge']
+- name: List Teleport users
+  ansible.builtin.command: tctl users ls
+  register: tp_users
+  changed_when: false
+  when: inventory_hostname in groups['edge']
+- name: Create PAM admin (prints one-time invite link)
+  ansible.builtin.command: "tctl users add {{ teleport_admin }} --roles=editor,access,auditor --logins=root,viewer"
+  register: tp_invite
+  when: inventory_hostname in groups['edge'] and teleport_admin not in tp_users.stdout
+- name: Save invite link
+  ansible.builtin.copy: { content: "{{ tp_invite.stdout }}", dest: /root/teleport-admin-invite.txt, mode: "0600" }
+  when: tp_invite is changed
+- ansible.builtin.debug:
+    msg: "{{ tp_invite.stdout_lines }}"
+  when: tp_invite is changed

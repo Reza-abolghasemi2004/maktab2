@@ -1,0 +1,16 @@
+[Unit]
+Description=Teleport (PAM)
+After=network-online.target wg-quick@wg0.service
+Wants=network-online.target wg-quick@wg0.service
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=5
+ExecStart=/usr/local/bin/teleport start --config=/etc/teleport.yaml --pid-file=/run/teleport.pid
+ExecReload=/bin/kill -HUP $MAINPID
+PIDFile=/run/teleport.pid
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,34 @@
+import os
+
+import psycopg2
+import redis
+from flask import Flask, jsonify
+
+app = Flask(__name__)
+cache = redis.Redis(host=os.environ["REDIS_HOST"], password=os.environ.get("REDIS_PASSWORD"),
+                    socket_connect_timeout=2)
+
+
+def pg():
+    return psycopg2.connect(host=os.environ["PGHOST"], user=os.environ["PGUSER"],
+                            password=os.environ["PGPASSWORD"], dbname=os.environ["PGDATABASE"],
+                            connect_timeout=3)
+
+
+@app.route("/healthz")
+def healthz():
+    return "ok"
+
+
+@app.route("/api/ping")
+def ping():
+    conn = pg()
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute("CREATE TABLE IF NOT EXISTS visits (id serial PRIMARY KEY, ts timestamptz DEFAULT now())")
+            cur.execute("INSERT INTO visits DEFAULT VALUES")
+            cur.execute("SELECT count(*) FROM visits")
+            visits = cur.fetchone()[0]
+    finally:
+        conn.close()
+    return jsonify(postgres_visits=visits, redis_hits=cache.incr("hits"))

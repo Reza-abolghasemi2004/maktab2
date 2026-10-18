@@ -1,0 +1,46 @@
+# Default: هر Host ناشناس رد می‌شود
+server { listen 80 default_server; server_name _; return 444; }
+server { listen 443 ssl default_server; ssl_reject_handshake on; }
+
+server {
+    listen 80;
+    server_name {{ wp_fqdn }} {{ app_fqdn }};
+    return 301 https://$host$request_uri;
+}
+
+# ───── WordPress (پیش‌فرض، بدون config سفارشی) + cache فایل‌های استاتیک ─────
+server {
+    listen 443 ssl http2;
+    server_name {{ wp_fqdn }};
+    ssl_certificate     {{ edge_public_cert }};
+    ssl_certificate_key {{ edge_public_key }};
+    client_max_body_size 64m;
+    include /etc/nginx/snippets/maktab-proxy.conf;
+
+    location ~* \.(?:css|js|mjs|jpe?g|png|gif|webp|avif|svg|ico|woff2?|ttf|otf|eot|mp4|webm)$ {
+        proxy_pass http://wordpress;
+        proxy_cache static_cache;
+        proxy_cache_key $scheme$host$request_uri;
+        proxy_cache_valid 200 301 302 7d;
+        proxy_cache_valid 404 1m;
+        proxy_cache_lock on;
+        proxy_cache_use_stale error timeout updating http_500 http_502 http_503;
+        proxy_hide_header Set-Cookie;
+        proxy_ignore_headers Set-Cookie;
+        expires 7d;
+        add_header X-Cache-Status $upstream_cache_status always;
+    }
+    location / { proxy_pass http://wordpress; }
+}
+
+# ───── Frontend + Backend API ─────
+server {
+    listen 443 ssl http2;
+    server_name {{ app_fqdn }};
+    ssl_certificate     {{ edge_public_cert }};
+    ssl_certificate_key {{ edge_public_key }};
+    include /etc/nginx/snippets/maktab-proxy.conf;
+
+    location /api/ { proxy_pass http://backend; }
+    location /     { proxy_pass http://frontend; }
+}

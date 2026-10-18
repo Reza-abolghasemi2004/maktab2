@@ -1,0 +1,4 @@
+---
+firewall_public_tcp: [22]
+firewall_public_udp: []
+firewall_trusted_ifaces: [wg0, cni0, flannel.1]

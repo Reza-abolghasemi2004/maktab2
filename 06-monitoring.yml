@@ -1,0 +1,21 @@
+---
+- name: "Task 6 - node_exporter everywhere"
+  hosts: vps
+  roles: [node_exporter]
+  any_errors_fatal: true
+
+- name: "Task 6 - ELK"
+  hosts: elk
+  roles: [elk]
+  any_errors_fatal: true
+
+- name: "Task 6 - Filebeat (nginx + system logs)"
+  hosts: vps
+  roles: [filebeat]
+  any_errors_fatal: true
+
+- name: "Task 6 - Prometheus / Alertmanager / Grafana / Blackbox"
+  hosts: monitoring
+  roles: [monitoring]
+  any_errors_fatal: true
+

@@ -1,0 +1,3 @@
+---
+wg_key_dir: "{{ '/etc/wireguard' if 'vps' in group_names else playbook_dir ~ '/.secrets/wg' }}"
+wg_spokes: "{{ (groups['vps'] | difference([wg_hub])) + groups['control'] }}"

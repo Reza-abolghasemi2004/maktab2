@@ -1,0 +1,47 @@
+---
+- ansible.builtin.file: { path: "{{ item.path }}", state: directory, owner: "{{ item.owner | default('root') }}", mode: "0755" }
+  loop:
+    - { path: /opt/monitoring }
+    - { path: /opt/monitoring/prometheus/rules }
+    - { path: /opt/monitoring/alertmanager }
+    - { path: /opt/monitoring/blackbox }
+    - { path: /opt/monitoring/grafana/provisioning/datasources }
+    - { path: /opt/monitoring/grafana/provisioning/dashboards }
+    - { path: /opt/monitoring/grafana/dashboards }
+    - { path: /srv/prometheus, owner: "65534" }
+    - { path: /srv/alertmanager, owner: "65534" }
+    - { path: /srv/grafana, owner: "472" }
+
+- ansible.builtin.template: { src: docker-compose.yml.j2, dest: /opt/monitoring/docker-compose.yml, mode: "0644" }
+- ansible.builtin.template: { src: prometheus.yml.j2, dest: /opt/monitoring/prometheus/prometheus.yml, mode: "0644" }
+  notify: reload prometheus
+- ansible.builtin.copy: { src: alerts.yml, dest: /opt/monitoring/prometheus/rules/maktab.yml, mode: "0644" }
+  notify: reload prometheus
+- ansible.builtin.template: { src: alertmanager.yml.j2, dest: /opt/monitoring/alertmanager/alertmanager.yml, mode: "0640" }
+  notify: reload alertmanager
+- ansible.builtin.template: { src: blackbox.yml.j2, dest: /opt/monitoring/blackbox/blackbox.yml, mode: "0644" }
+  notify: reload blackbox
+
+- ansible.builtin.template: { src: datasources.yml.j2, dest: /opt/monitoring/grafana/provisioning/datasources/maktab.yml, mode: "0644" }
+  notify: restart grafana
+- ansible.builtin.copy:
+    dest: /opt/monitoring/grafana/provisioning/dashboards/maktab.yml
+    mode: "0644"
+    content: |
+      apiVersion: 1
+      providers:
+        - name: maktab
+          type: file
+          options: { path: /etc/grafana/dashboards }
+  notify: restart grafana
+- name: Dashboards generated from panel definitions
+  ansible.builtin.template: { src: dashboard.json.j2, dest: "/opt/monitoring/grafana/dashboards/{{ item.uid }}.json", mode: "0644" }
+  loop:
+    - { uid: vm-resources, title: "VM Resources (RAM/CPU/IOPS/Network/Storage)", panels: "{{ vm_panels }}", instance_var: true }
+    - { uid: platform,     title: "Platform (domains, certs, k8s, ELK, backups)", panels: "{{ platform_panels }}", instance_var: false }
+  loop_control: { label: "{{ item.uid }}" }
+  notify: restart grafana
+- ansible.builtin.copy: { src: nginx-traffic.json, dest: /opt/monitoring/grafana/dashboards/nginx-traffic.json, mode: "0644" }
+  notify: restart grafana
+
+- community.docker.docker_compose_v2: { project_src: /opt/monitoring, state: present }

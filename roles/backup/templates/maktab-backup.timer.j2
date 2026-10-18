@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Maktab backup
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+RandomizedDelaySec=10m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

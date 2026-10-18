@@ -1,0 +1,3 @@
+---
+pki_dir: "{{ playbook_dir }}/.secrets/pki"
+pki_remote_dir: /etc/maktab/tls

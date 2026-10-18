@@ -1,0 +1,6 @@
+---
+- name: Redistribute PKI files on VPS1
+  hosts: vps1
+  gather_facts: false
+  roles:
+    - pki

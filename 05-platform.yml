@@ -1,0 +1,19 @@
+---
+- name: "Task 5 - Git + private Docker registry + CI runner"
+  hosts: edge
+  roles: [devtools]
+  any_errors_fatal: true
+
+- name: "Task 5 - GitOps (seed repos, ArgoCD application)"
+  hosts: k3s_server
+  module_defaults:
+    kubernetes.core.k8s:
+      kubeconfig: /etc/rancher/k3s/k3s.yaml
+  roles: [gitops]
+  any_errors_fatal: true
+
+- name: "Task 5 - Edge nginx (WordPress static cache, apps, internal vhosts)"
+  hosts: edge
+  roles: [edge_nginx]
+  any_errors_fatal: true
+

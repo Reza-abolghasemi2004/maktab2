@@ -1,0 +1,42 @@
+---
+# هر ریپو فقط یک‌بار seed می‌شود (بعد از آن CI/توسعه‌دهنده مالک ریپوست؛ تگ ایمیج توسط CI عوض می‌شود)
+- ansible.builtin.file: { path: "{{ repos_dir }}", state: directory, mode: "0700" }
+- ansible.builtin.include_tasks: repo.yml
+  loop: [gitops, backend, frontend]
+  loop_control: { loop_var: repo }
+
+- name: ArgoCD → private Git repository credentials
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: repo-gitops
+        namespace: argocd
+        labels: { argocd.argoproj.io/secret-type: repository }
+      stringData:
+        type: git
+        url: "http://{{ hub_ip }}:3000/{{ gitea_org }}/gitops.git"
+        username: "{{ gitea_admin_user }}"
+        password: "{{ gitea_admin_password }}"
+  no_log: true
+
+- name: ArgoCD Application (auto-sync, prune, self-heal)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: argoproj.io/v1alpha1
+      kind: Application
+      metadata: { name: apps, namespace: argocd }
+      spec:
+        project: default
+        source:
+          repoURL: "http://{{ hub_ip }}:3000/{{ gitea_org }}/gitops.git"
+          targetRevision: main
+          path: apps
+          directory: { recurse: true }
+        destination: { server: "https://kubernetes.default.svc" }
+        syncPolicy:
+          automated: { prune: true, selfHeal: true }
+          syncOptions: [ServerSideApply=true]

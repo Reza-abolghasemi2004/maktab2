@@ -1,0 +1,22 @@
+version: v3
+teleport:
+  nodename: {{ inventory_hostname }}
+  data_dir: /var/lib/teleport
+  log: { output: stderr, severity: INFO }
+auth_service:
+  enabled: true
+  cluster_name: {{ private_domain }}
+  listen_addr: {{ hub_ip }}:3025          # فقط روی VPN
+  authentication: { type: local, second_factor: otp }
+  tokens:
+    - "node:{{ teleport_node_token }}"
+proxy_service:
+  enabled: true
+  web_listen_addr: {{ hub_ip }}:3080      # فقط از VPN قابل دسترس است
+  public_addr: teleport.{{ private_domain }}:3080
+  https_keypairs:
+    - cert_file: /etc/maktab/tls/fullchain.crt
+      key_file: /etc/maktab/tls/wildcard.key
+ssh_service:
+  enabled: true
+  labels: { role: edge, env: prod }

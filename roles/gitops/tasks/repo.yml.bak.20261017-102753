@@ -1,0 +1,23 @@
+---
+- ansible.builtin.stat: { path: "{{ repos_dir }}/{{ repo }}/.git" }
+  register: repo_seeded
+- name: "Render seed files for {{ repo }}"
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ repos_dir }}/{{ repo }}/{{ item.path | regex_replace('\\.j2$', '') }}"
+    mode: "0644"
+  loop: "{{ query('community.general.filetree', role_path ~ '/templates/repo-' ~ repo) }}"
+  loop_control: { label: "{{ item.path }}" }
+  when: not repo_seeded.stat.exists and item.state == 'file'
+- name: "Commit and push {{ repo }} to Gitea"
+  ansible.builtin.shell: |
+    set -e
+    cd {{ repos_dir }}/{{ repo }}
+    git init -q -b main
+    git config user.name ansible
+    git config user.email "ansible@{{ private_domain }}"
+    git add -A
+    git commit -q -m "Initial seed from Ansible"
+    git push -q "http://{{ gitea_admin_user }}:{{ gitea_admin_password }}@{{ hub_ip }}:3000/{{ gitea_org }}/{{ repo }}.git" HEAD:main
+  when: not repo_seeded.stat.exists
+  no_log: true

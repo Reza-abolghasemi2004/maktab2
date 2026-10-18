@@ -1,0 +1,49 @@
+---
+# ───── hub: key pair for pushing offsite copy ─────
+- name: Backup SSH key on hub
+  community.crypto.openssh_keypair: { path: /root/.ssh/backup_ed25519, type: ed25519 }
+  when: inventory_hostname in groups['edge']
+- ansible.builtin.slurp: { src: /root/.ssh/backup_ed25519.pub }
+  register: backup_pub
+  when: inventory_hostname in groups['edge']
+
+- name: Validate hub backup public key
+  ansible.builtin.assert:
+    that:
+      - >-
+        hostvars[groups['edge'][0]].backup_pub is defined
+        and
+        hostvars[groups['edge'][0]].backup_pub.content is defined
+    fail_msg: >-
+      The hub backup public key is unavailable.
+      The edge host may have failed in an earlier play.
+      Fix the earlier failure and run the backup playbook again.
+  when: inventory_hostname in groups['worker']
+
+# ───── worker: backup receiver ─────
+- name: Remote backup user
+  ansible.builtin.user:
+    name: "{{ backup_remote_user }}"
+    home: "{{ backup_remote_dir }}"
+    shell: /bin/bash
+    create_home: true
+    password_lock: true
+  when: inventory_hostname in groups['worker']
+- ansible.posix.authorized_key:
+    user: "{{ backup_remote_user }}"
+    key: "{{ hostvars[groups['edge'][0]].backup_pub.content | b64decode }}"
+    key_options: "from=\"{{ hub_ip }}\",no-port-forwarding,no-agent-forwarding,no-X11-forwarding"
+  when: inventory_hostname in groups['worker']
+
+# ───── hub: script + timer ─────
+- name: Backup script, service and timer
+  when: inventory_hostname in groups['edge']
+  block:
+    - ansible.builtin.file: { path: "{{ backup_root }}", state: directory, mode: "0700" }
+    - ansible.builtin.template: { src: maktab-backup.sh.j2, dest: /usr/local/sbin/maktab-backup.sh, mode: "0750" }
+    - ansible.builtin.template: { src: maktab-backup.service.j2, dest: /etc/systemd/system/maktab-backup.service, mode: "0644" }
+      notify: reload systemd
+    - ansible.builtin.template: { src: maktab-backup.timer.j2, dest: /etc/systemd/system/maktab-backup.timer, mode: "0644" }
+      notify: reload systemd
+    - ansible.builtin.meta: flush_handlers
+    - ansible.builtin.systemd: { name: maktab-backup.timer, enabled: true, state: started }

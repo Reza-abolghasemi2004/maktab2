@@ -1,0 +1,15 @@
+node-ip: {{ wg_ip }}
+advertise-address: {{ wg_ip }}
+tls-san:
+  - {{ wg_ip }}
+  - {{ ansible_host }}
+  - k8s.{{ private_domain }}
+flannel-iface: wg0            # ترافیک pod↔pod داخل تونل رمزنگاری‌شده
+disable:
+  - traefik                   # ورودی‌ها را nginx edge مدیریت می‌کند (NodePort)
+  - servicelb
+write-kubeconfig-mode: "0600"
+token: "{{ k3s_token }}"
+kubelet-arg:
+  - "system-reserved=cpu=200m,memory=512Mi"
+  - "eviction-hard=memory.available<250Mi"

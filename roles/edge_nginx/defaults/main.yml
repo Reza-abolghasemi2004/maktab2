@@ -1,0 +1,3 @@
+---
+edge_public_cert: "{{ '/etc/letsencrypt/live/maktab/fullchain.pem' if letsencrypt_enabled else '/etc/maktab/tls/fullchain.crt' }}"
+edge_public_key:  "{{ '/etc/letsencrypt/live/maktab/privkey.pem'   if letsencrypt_enabled else '/etc/maktab/tls/wildcard.key' }}"

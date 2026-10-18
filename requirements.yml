@@ -1,0 +1,7 @@
+---
+collections:
+  - name: ansible.posix
+  - name: community.general
+  - name: community.docker
+  - name: community.crypto
+  - name: kubernetes.core

@@ -1,0 +1,25 @@
+# PostgreSQL HA cluster (1 primary + 1 replica، روی دو نود جدا) با CloudNativePG
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata: { name: pg-main, namespace: data }
+spec:
+  instances: 2
+  imageName: ghcr.io/cloudnative-pg/postgresql:16
+  primaryUpdateStrategy: unsupervised
+  storage: { size: 5Gi, storageClass: local-path }
+  bootstrap:
+    initdb:
+      database: app
+      owner: app
+      secret: { name: pg-app-credentials }
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: kubernetes.io/hostname
+    podAntiAffinityType: required
+  postgresql:
+    parameters:
+      shared_buffers: 128MB
+      max_connections: "100"
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 768Mi }

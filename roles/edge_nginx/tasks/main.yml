@@ -1,0 +1,39 @@
+---
+- ansible.builtin.apt: { name: nginx, state: present }
+
+- name: Let's Encrypt certificate (standalone, nginx stopped only during issue/renew)
+  when: letsencrypt_enabled
+  block:
+    - ansible.builtin.apt: { name: certbot, state: present }
+    - ansible.builtin.stat: { path: /etc/letsencrypt/live/maktab/fullchain.pem }
+      register: le_cert
+    - ansible.builtin.service: { name: nginx, state: stopped }
+      when: not le_cert.stat.exists
+    - ansible.builtin.command: >
+        certbot certonly --standalone --non-interactive --agree-tos
+        -m {{ letsencrypt_email }} --cert-name maktab
+        -d {{ wp_fqdn }} -d {{ app_fqdn }}
+        --pre-hook "systemctl stop nginx" --post-hook "systemctl start nginx"
+      args: { creates: /etc/letsencrypt/live/maktab/fullchain.pem }
+
+- ansible.builtin.file: { path: /var/cache/nginx/static, state: directory, owner: www-data, group: www-data, mode: "0750" }
+- ansible.builtin.file: { path: /etc/nginx/snippets, state: directory, mode: "0755" }
+
+- name: nginx.conf (JSON access log for ELK)
+  ansible.builtin.template: { src: nginx.conf.j2, dest: /etc/nginx/nginx.conf, mode: "0644", validate: "nginx -t -c %s" }
+  notify: reload nginx
+- ansible.builtin.template: { src: maktab-http.conf.j2, dest: /etc/nginx/conf.d/maktab.conf, mode: "0644" }
+  notify: reload nginx
+- ansible.builtin.template: { src: proxy.conf.j2, dest: /etc/nginx/snippets/maktab-proxy.conf, mode: "0644" }
+  notify: reload nginx
+- ansible.builtin.template: { src: public.conf.j2, dest: /etc/nginx/sites-enabled/public.conf, mode: "0644" }
+  notify: reload nginx
+- ansible.builtin.template: { src: internal.conf.j2, dest: /etc/nginx/sites-enabled/internal.conf, mode: "0644" }
+  notify: reload nginx
+- ansible.builtin.file: { path: /etc/nginx/sites-enabled/default, state: absent }
+  notify: reload nginx
+
+- name: Validate and start
+  ansible.builtin.command: nginx -t
+  changed_when: false
+- ansible.builtin.service: { name: nginx, state: started, enabled: true }

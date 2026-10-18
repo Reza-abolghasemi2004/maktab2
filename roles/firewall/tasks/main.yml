@@ -1,0 +1,58 @@
+---
+- name: Install ufw
+  ansible.builtin.apt: { name: ufw, state: present }
+
+# NodePort های k8s (30000-32767) از مسیر nat/FORWARD رد می‌شوند و ufw را دور می‌زنند → در raw drop می‌کنیم
+- name: Drop NodePort range on public interface (raw table)
+  ansible.builtin.blockinfile:
+    path: /etc/ufw/before.rules
+    insertbefore: BOF
+    marker: "# {mark} MAKTAB RAW"
+    block: |
+      *raw
+      :PREROUTING ACCEPT [0:0]
+      -A PREROUTING -i {{ public_iface }} -p tcp --dport 30000:32767 -j DROP
+      -A PREROUTING -i {{ public_iface }} -p udp --dport 30000:32767 -j DROP
+      COMMIT
+  notify: reload ufw
+
+# پورت‌های publish شده‌ی Docker هم ufw را دور می‌زنند → DOCKER-USER
+- name: Block new forwarded connections from the internet to containers
+  ansible.builtin.blockinfile:
+    path: /etc/ufw/after.rules
+    marker: "# {mark} MAKTAB DOCKER-USER"
+    block: |
+      *filter
+      :DOCKER-USER - [0:0]
+      -A DOCKER-USER -i {{ public_iface }} -m conntrack --ctstate NEW -j DROP
+      -A DOCKER-USER -j RETURN
+      COMMIT
+  notify: reload ufw
+
+- name: Default policies
+  community.general.ufw: { default: "{{ item.policy }}", direction: "{{ item.dir }}" }
+  loop:
+    - { policy: deny,  dir: incoming }
+    - { policy: allow, dir: outgoing }
+    - { policy: allow, dir: routed }     # forwarding برای Docker/K8s (ورودی اینترنت در بالا drop می‌شود)
+
+- name: Allow needed public TCP ports (SSH rate-limited)
+  community.general.ufw:
+    rule: "{{ 'limit' if item == 22 else 'allow' }}"
+    port: "{{ item | string }}"
+    proto: tcp
+  loop: "{{ firewall_public_tcp }}"
+- name: Allow public UDP ports (VPN)
+  community.general.ufw: { rule: allow, port: "{{ item | string }}", proto: udp }
+  loop: "{{ firewall_public_udp }}"
+
+- name: Trust internal interfaces (VPN, Kubernetes)
+  community.general.ufw: { rule: allow, interface: "{{ item }}", direction: in }
+  loop: "{{ firewall_trusted_ifaces }}"
+- name: Trust private networks (Docker, pods, services, VPN)
+  community.general.ufw: { rule: allow, from_ip: "{{ item }}" }
+  loop: ["{{ docker_cidr }}", "{{ pod_cidr }}", "{{ svc_cidr }}", "{{ wg_network }}"]
+
+- name: Enable ufw
+  community.general.ufw: { state: enabled, logging: "low" }
+- ansible.builtin.meta: flush_handlers

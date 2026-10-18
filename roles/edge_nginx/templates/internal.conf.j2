@@ -1,0 +1,18 @@
+# سرویس‌های داخلی: فقط روی IP وایرگارد ({{ hub_ip }}) → فقط از VPN
+server {
+    listen {{ hub_ip }}:80;
+    server_name *.{{ private_domain }};
+    return 301 https://$host$request_uri;
+}
+{% for v in internal_vhosts %}
+
+server {
+    listen {{ hub_ip }}:443 ssl http2;
+    server_name {{ v.name }}.{{ private_domain }};
+    ssl_certificate     /etc/maktab/tls/fullchain.crt;
+    ssl_certificate_key /etc/maktab/tls/wildcard.key;
+    client_max_body_size 0;
+    include /etc/nginx/snippets/maktab-proxy.conf;
+    location / { proxy_pass {{ v.upstream }}; }
+}
+{% endfor %}

@@ -1,0 +1,16 @@
+---
+- name: "Task 3 - Private CA + routed WireGuard VPN"
+  hosts: control:vps
+  roles: [pki, wireguard]
+  any_errors_fatal: true
+
+- name: "Task 3 - Private DNS"
+  hosts: edge
+  roles: [dns]
+  any_errors_fatal: true
+
+- name: "Task 3 - PAM platform (Teleport)"
+  hosts: vps
+  roles: [teleport]
+  any_errors_fatal: true
+

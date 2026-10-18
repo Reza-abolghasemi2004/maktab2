@@ -1,0 +1,5 @@
+---
+- ansible.builtin.include_tasks: ca.yml
+  when: "'control' in group_names"
+- ansible.builtin.include_tasks: distribute.yml
+  when: "'vps' in group_names"

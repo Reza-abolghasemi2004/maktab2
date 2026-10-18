@@ -1,0 +1,3 @@
+---
+- name: restart argocd-server
+  ansible.builtin.command: k3s kubectl -n argocd rollout restart deploy/argocd-server

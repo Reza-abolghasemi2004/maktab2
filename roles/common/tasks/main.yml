@@ -1,0 +1,89 @@
+---
+- name: Set hostname
+  ansible.builtin.hostname: { name: "{{ inventory_hostname }}" }
+
+- name: Install default packages
+  ansible.builtin.apt:
+    name: "{{ common_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Timezone
+  community.general.timezone: { name: "{{ timezone }}" }
+
+- name: Enable base services
+  ansible.builtin.service: { name: "{{ item }}", state: started, enabled: true }
+  loop: [chrony, fail2ban]
+
+- name: Cluster hosts in /etc/hosts
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} MAKTAB"
+    block: |
+      {{ hub_ip }} vps1 vps1.{{ private_domain }}
+      {{ worker_ip }} vps2 vps2.{{ private_domain }}
+
+- name: Kernel parameters
+  ansible.posix.sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/99-maktab.conf
+    reload: true
+  loop: "{{ common_sysctl }}"
+
+- name: Swap file
+  ansible.builtin.shell: |
+    set -e
+    fallocate -l {{ swap_size_mb }}M /swapfile
+    chmod 600 /swapfile
+    mkswap /swapfile
+    swapon /swapfile
+  args: { creates: /swapfile }
+  when: ansible_swaptotal_mb | int < 512
+
+- name: Persist swap in fstab
+  ansible.posix.mount: { path: none, src: /swapfile, fstype: swap, opts: sw, state: present }
+
+# ───── viewer user (read-only: no sudo, can read logs) ─────
+- name: Create viewer user
+  ansible.builtin.user:
+    name: viewer
+    shell: /bin/bash
+    groups: [adm, systemd-journal]
+    append: true
+    create_home: true
+    password_lock: true
+- name: Authorize SSH key for viewer
+  ansible.posix.authorized_key:
+    user: viewer
+    key: "{{ viewer_ssh_pubkey }}"
+    key_options: "no-port-forwarding,no-agent-forwarding,no-X11-forwarding"
+
+# ───── SSH hardening (به‌خاطر اولویت first-match نام فایل 00- است) ─────
+- name: Ensure key access for root before disabling passwords
+  ansible.posix.authorized_key: { user: root, key: "{{ admin_ssh_pubkey }}" }
+- name: SSH hardening drop-in
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/00-maktab.conf
+    mode: "0644"
+    content: |
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitRootLogin prohibit-password
+      MaxAuthTries 3
+      X11Forwarding no
+      ClientAliveInterval 120
+  notify: restart ssh
+
+- name: Fail2ban sshd jail
+  ansible.builtin.copy:
+    dest: /etc/fail2ban/jail.d/maktab.local
+    mode: "0644"
+    content: |
+      [sshd]
+      enabled = true
+      maxretry = 4
+      bantime = 1h
+      ignoreip = 127.0.0.1/8 {{ wg_network }}
+  notify: restart fail2ban

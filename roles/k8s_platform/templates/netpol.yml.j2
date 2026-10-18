@@ -1,0 +1,121 @@
+# ───── ns: apps ─────
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: default-deny-ingress, namespace: apps }
+spec: { podSelector: {}, policyTypes: [Ingress] }
+---
+# nginx edge (روی نودها) از طریق NodePort؛ منبع = IP نود/flannel
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-edge-to-web, namespace: apps }
+spec:
+  podSelector: { matchLabels: { tier: web } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock: { cidr: {{ wg_network }} }
+        - ipBlock: { cidr: {{ pod_cidr }} }
+      ports: [{ port: 80, protocol: TCP }, { port: 8080, protocol: TCP }]
+# ───── ns: data ─────
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: default-deny-ingress, namespace: data }
+spec: { podSelector: {}, policyTypes: [Ingress] }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-same-namespace, namespace: data }
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress: [{ from: [{ podSelector: {} }] }]
+---
+# kubelet probe (IP گیت‌وی cni0 هر نود)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-node-probes, namespace: data }
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock: { cidr: 10.42.0.1/32 }
+        - ipBlock: { cidr: 10.42.1.1/32 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: backend-to-postgres, namespace: data }
+spec:
+  podSelector: { matchLabels: { cnpg.io/cluster: pg-main } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: apps } }
+          podSelector: { matchLabels: { app: backend } }
+      ports: [{ port: 5432, protocol: TCP }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: cnpg-operator-to-postgres, namespace: data }
+spec:
+  podSelector: { matchLabels: { cnpg.io/cluster: pg-main } }
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: cnpg-system } } }]
+      ports: [{ port: 8000, protocol: TCP }, { port: 5432, protocol: TCP }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: backend-to-redis, namespace: data }
+spec:
+  podSelector: { matchLabels: { app: redis } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: apps } }
+          podSelector: { matchLabels: { app: backend } }
+      ports: [{ port: 6379, protocol: TCP }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: wordpress-to-mariadb, namespace: data }
+spec:
+  podSelector: { matchLabels: { app: mariadb } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: apps } }
+          podSelector: { matchLabels: { app: wordpress } }
+      ports: [{ port: 3306, protocol: TCP }]
+---
+# blackbox داخل کلاستر برای uptime سرویس‌ها
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-blackbox-probes, namespace: data }
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+          podSelector: { matchLabels: { app: blackbox-k8s } }
+# ───── ns: monitoring ─────
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: default-deny-ingress, namespace: monitoring }
+spec: { podSelector: {}, policyTypes: [Ingress] }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-prometheus-scrape, namespace: monitoring }
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock: { cidr: {{ wg_network }} }
+        - ipBlock: { cidr: {{ pod_cidr }} }
+      ports: [{ port: 8080, protocol: TCP }, { port: 9115, protocol: TCP }]

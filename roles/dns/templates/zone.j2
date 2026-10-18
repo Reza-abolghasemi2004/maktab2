@@ -1,0 +1,8 @@
+$TTL 300
+@ IN SOA ns1.{{ private_domain }}. admin.{{ private_domain }}. (
+    {{ (dns_records | string | hash('md5'))[:8] | int(base=16) }} ; serial
+    3600 600 86400 300 )
+@ IN NS ns1.{{ private_domain }}.
+{% for r in dns_records %}
+{{ r.name }} IN A {{ r.ip }}
+{% endfor %}

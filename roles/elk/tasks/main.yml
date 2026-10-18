@@ -1,0 +1,60 @@
+---
+- ansible.builtin.file: { path: "{{ item.path }}", state: directory, owner: "{{ item.owner }}", mode: "0755" }
+  loop:
+    - { path: /opt/elk, owner: root }
+    - { path: /opt/elk/logstash, owner: root }
+    - { path: /srv/elasticsearch, owner: "1000" }
+- ansible.builtin.template: { src: docker-compose.yml.j2, dest: /opt/elk/docker-compose.yml, mode: "0644" }
+- ansible.builtin.template: { src: logstash/logstash.conf.j2, dest: /opt/elk/logstash/logstash.conf, mode: "0644" }
+
+- community.docker.docker_compose_v2: { project_src: /opt/elk, state: present }
+
+- name: Wait for Elasticsearch
+  ansible.builtin.uri: { url: "http://{{ wg_ip }}:9200/_cluster/health", status_code: 200 }
+  register: es_up
+  retries: 40
+  delay: 6
+  until: es_up.status == 200
+
+- name: ILM policy (حذف لاگ‌ها بعد از ۱۴ روز)
+  ansible.builtin.uri:
+    url: "http://{{ wg_ip }}:9200/_ilm/policy/maktab-14d"
+    method: PUT
+    body_format: json
+    body:
+      policy:
+        phases:
+          hot: { actions: {} }
+          delete: { min_age: 14d, actions: { delete: {} } }
+- name: Index template nginx-* (explicit mappings)
+  ansible.builtin.uri:
+    url: "http://{{ wg_ip }}:9200/_index_template/nginx"
+    method: PUT
+    body_format: json
+    body:
+      index_patterns: ["nginx-*"]
+      template:
+        settings: { number_of_shards: 1, number_of_replicas: 0, "index.lifecycle.name": maktab-14d }
+        mappings:
+          properties:
+            "@timestamp": { type: date }
+            remote_addr: { type: ip }
+            vhost: { type: keyword }
+            method: { type: keyword }
+            uri: { type: keyword, ignore_above: 512 }
+            status: { type: integer }
+            bytes: { type: long }
+            request_time: { type: float }
+            upstream_response_time: { type: float }
+            cache_status: { type: keyword }
+            referer: { type: keyword, ignore_above: 512 }
+            user_agent: { type: keyword, ignore_above: 512 }
+- name: Index template syslog-*
+  ansible.builtin.uri:
+    url: "http://{{ wg_ip }}:9200/_index_template/syslog"
+    method: PUT
+    body_format: json
+    body:
+      index_patterns: ["syslog-*"]
+      template:
+        settings: { number_of_shards: 1, number_of_replicas: 0, "index.lifecycle.name": maktab-14d }

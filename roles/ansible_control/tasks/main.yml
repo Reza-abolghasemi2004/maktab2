@@ -1,0 +1,29 @@
+---
+- name: Install Ansible and K8s python libs
+  ansible.builtin.apt:
+    name: [ansible-core, python3-kubernetes, python3-yaml, python3-netaddr]
+    state: present
+- name: Install collections system-wide
+  ansible.builtin.command: >
+    ansible-galaxy collection install -p /usr/share/ansible/collections
+    ansible.posix community.general community.docker community.crypto kubernetes.core
+  args: { creates: /usr/share/ansible/collections/ansible_collections/kubernetes/core }
+- name: /etc/ansible config
+  ansible.builtin.file: { path: /etc/ansible, state: directory, mode: "0755" }
+- name: ansible.cfg
+  ansible.builtin.copy:
+    dest: /etc/ansible/ansible.cfg
+    mode: "0644"
+    content: |
+      [defaults]
+      inventory = /etc/ansible/hosts
+      host_key_checking = False
+      interpreter_python = auto_silent
+      collections_path = /usr/share/ansible/collections
+- name: Local inventory (this server can deploy to itself)
+  ansible.builtin.copy:
+    dest: /etc/ansible/hosts
+    mode: "0644"
+    content: |
+      [local]
+      localhost ansible_connection=local

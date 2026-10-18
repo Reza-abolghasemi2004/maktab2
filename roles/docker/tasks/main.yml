@@ -1,0 +1,13 @@
+---
+# Ubuntu 24.04: docker.io + docker-compose-v2 از مخزن رسمی اوبونتو
+- name: Install Docker engine and compose plugin
+  ansible.builtin.apt:
+    name: [docker.io, docker-compose-v2]
+    state: present
+    update_cache: true
+- name: Docker daemon config
+  ansible.builtin.template: { src: daemon.json.j2, dest: /etc/docker/daemon.json, mode: "0644" }
+  notify: restart docker
+- name: Enable docker
+  ansible.builtin.service: { name: docker, state: started, enabled: true }
+- ansible.builtin.meta: flush_handlers

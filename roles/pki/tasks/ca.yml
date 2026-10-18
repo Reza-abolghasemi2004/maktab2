@@ -1,0 +1,38 @@
+---
+# نیازمند python3-cryptography روی لپ‌تاپ (scripts/bootstrap-control.sh نصب می‌کند)
+- ansible.builtin.file: { path: "{{ pki_dir }}", state: directory, mode: "0700" }
+
+- community.crypto.openssl_privatekey: { path: "{{ pki_dir }}/ca.key", size: 4096 }
+- community.crypto.openssl_csr_pipe:
+    privatekey_path: "{{ pki_dir }}/ca.key"
+    common_name: "Maktab Internal CA"
+    basic_constraints: ["CA:TRUE"]
+    basic_constraints_critical: true
+    key_usage: [keyCertSign, cRLSign]
+    key_usage_critical: true
+  register: ca_csr
+- community.crypto.x509_certificate:
+    path: "{{ pki_dir }}/ca.crt"
+    csr_content: "{{ ca_csr.csr }}"
+    privatekey_path: "{{ pki_dir }}/ca.key"
+    provider: selfsigned
+    selfsigned_not_after: "+3650d"
+
+- community.crypto.openssl_privatekey: { path: "{{ pki_dir }}/wildcard.key", size: 2048 }
+- community.crypto.openssl_csr_pipe:
+    privatekey_path: "{{ pki_dir }}/wildcard.key"
+    common_name: "*.{{ private_domain }}"
+    subject_alt_name:
+      - "DNS:*.{{ private_domain }}"
+      - "DNS:{{ private_domain }}"
+      - "IP:{{ hub_ip }}"
+      - "IP:{{ worker_ip }}"
+  register: wc_csr
+- community.crypto.x509_certificate:
+    path: "{{ pki_dir }}/wildcard.crt"
+    csr_content: "{{ wc_csr.csr }}"
+    privatekey_path: "{{ pki_dir }}/wildcard.key"
+    provider: ownca
+    ownca_path: "{{ pki_dir }}/ca.crt"
+    ownca_privatekey_path: "{{ pki_dir }}/ca.key"
+    ownca_not_after: "+825d"

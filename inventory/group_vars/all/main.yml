@@ -1,0 +1,93 @@
+---
+# ───────── Domains ─────────
+private_domain: maktab.rezaabolghasemi.ir
+public_domain: rezaabolghasemi.ir            # ← دامنه واقعی خودتان (A record → 81.12.50.30)
+wp_fqdn: "wp.{{ public_domain }}"
+app_fqdn: "app.{{ public_domain }}"
+letsencrypt_enabled: false            # true = گواهی Let's Encrypt برای دامنه‌های عمومی
+letsencrypt_email: "admin@{{ public_domain }}"
+timezone: Asia/Tehran
+
+# ───────── Access ─────────
+admin_ssh_pubkey_file: "~/.ssh/id_ed25519.pub"
+admin_ssh_pubkey: "{{ lookup('ansible.builtin.file', admin_ssh_pubkey_file) }}"
+viewer_ssh_pubkey: "{{ admin_ssh_pubkey }}"
+swap_size_mb: 2048
+
+# ───────── Network ─────────
+wg_hub: vps1
+wg_network: 10.8.0.0/24
+wg_port: 51820
+hub_ip: "{{ hostvars['vps1'].wg_ip }}"
+worker_ip: "{{ hostvars['vps2'].wg_ip }}"
+pod_cidr: 10.42.0.0/16
+svc_cidr: 10.43.0.0/16
+docker_cidr: 172.16.0.0/12
+public_iface: "{{ ansible_default_ipv4.interface | default('eth0') }}"
+dns_forwarders: [1.1.1.1, 8.8.8.8]    # اگر مسدود بود: DNS داخلی ISP یا شکن
+
+dns_records:
+  - { name: ns1,          ip: "{{ hub_ip }}" }
+  - { name: vps1,         ip: "{{ hub_ip }}" }
+  - { name: vps2,         ip: "{{ worker_ip }}" }
+  - { name: k8s,          ip: "{{ hub_ip }}" }
+  - { name: teleport,     ip: "{{ hub_ip }}" }
+  - { name: gitea,        ip: "{{ hub_ip }}" }
+  - { name: registry,     ip: "{{ hub_ip }}" }
+  - { name: argocd,       ip: "{{ hub_ip }}" }
+  - { name: grafana,      ip: "{{ hub_ip }}" }
+  - { name: prometheus,   ip: "{{ hub_ip }}" }
+  - { name: alertmanager, ip: "{{ hub_ip }}" }
+  - { name: kibana,       ip: "{{ hub_ip }}" }
+
+# vhostهای داخلی (فقط روی IP وایرگارد nginx گوش می‌دهند)
+internal_vhosts:
+  - { name: gitea,        upstream: "http://{{ hub_ip }}:3000" }
+  - { name: argocd,       upstream: "http://{{ hub_ip }}:{{ np_argocd }}" }
+  - { name: grafana,      upstream: "http://{{ worker_ip }}:3001" }
+  - { name: prometheus,   upstream: "http://{{ worker_ip }}:9090" }
+  - { name: alertmanager, upstream: "http://{{ worker_ip }}:9093" }
+  - { name: kibana,       upstream: "http://{{ worker_ip }}:5601" }
+
+# ───────── Kubernetes (k3s) ─────────
+k3s_version: "v1.30.5+k3s1"
+np_wordpress: 30080
+np_frontend: 30081
+np_backend: 30082
+np_ksm: 30085
+np_argocd: 30090
+np_blackbox_k8s: 30115
+nfs_export_path: /srv/nfs/k8s
+cnpg_manifest_url: "https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.24/releases/cnpg-1.24.1.yaml"
+argocd_version: "v2.12.4"
+
+# ───────── DevTools ─────────
+gitea_image: "hub.hamdocker.ir/gitea/gitea:1.22.3"
+registry_image: "hub.hamdocker.ir/registry:2"
+runner_image: "hub.hamdocker.ir/gitea/act_runner:0.2.11"
+gitea_org: maktab
+gitea_admin_user: maktab-admin
+gitea_admin_email: "admin@{{ private_domain }}"
+registry_user: ci
+registry_endpoint: "{{ hub_ip }}:5000"     # HTTP روی تونل وایرگارد (رمزنگاری‌شده)
+repos_dir: /opt/repos
+
+# ───────── PAM (Teleport) ─────────
+teleport_version: "16.4.6"
+teleport_admin: pam-admin
+
+# ───────── Observability versions ─────────
+elk_version: "8.15.3"
+prometheus_image: "hub.hamdocker.ir/prom/prometheus:v2.54.1"
+alertmanager_image: "hub.hamdocker.ir/prom/alertmanager:v0.27.0"
+blackbox_image: "hub.hamdocker.ir/prom/blackbox-exporter:v0.25.0"
+grafana_image: "hub.hamdocker.ir/grafana/grafana:11.2.2"
+node_exporter_textfile_dir: /var/lib/prometheus/node-exporter
+
+# ───────── Backup ─────────
+backup_root: /var/backups/maktab
+backup_keep_daily: 7        # روز
+backup_keep_weekly: 28      # روز  (۴ هفته)
+backup_keep_monthly: 93     # روز  (۳ ماه)
+backup_remote_user: backup
+backup_remote_dir: /var/backups/maktab-vps1

@@ -1,0 +1,26 @@
+input { beats { port => 5044 } }
+
+filter {
+  if [fields][type] == "nginx" {
+    json { source => "message" }
+    date { match => ["time", "ISO8601"] target => "@timestamp" }
+    # upstream_response_time ممکن است "-" یا "0.01, 0.02" باشد → اولین عدد
+    ruby {
+      code => '
+        v = event.get("upstream_response_time")
+        event.set("upstream_response_time", v.to_s.split(/[, :]+/).first.to_f)
+        c = event.get("cache_status")
+        event.set("cache_status", "NONE") if c.nil? || c == "" || c == "-"
+      '
+    }
+    mutate { remove_field => ["message", "time", "log", "agent", "ecs", "input"] }
+  }
+}
+
+output {
+  if [fields][type] == "nginx" {
+    elasticsearch { hosts => ["http://elasticsearch:9200"] index => "nginx-%{+YYYY.MM.dd}" }
+  } else {
+    elasticsearch { hosts => ["http://elasticsearch:9200"] index => "syslog-%{+YYYY.MM.dd}" }
+  }
+}

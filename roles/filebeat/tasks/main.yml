@@ -1,0 +1,10 @@
+---
+- ansible.builtin.file: { path: "{{ item }}", state: directory, mode: "0755" }
+  loop: [/opt/filebeat, /srv/filebeat]
+- ansible.builtin.template: { src: filebeat.yml.j2, dest: /opt/filebeat/filebeat.yml, mode: "0644" }
+  register: fb_cfg
+- ansible.builtin.template: { src: docker-compose.yml.j2, dest: /opt/filebeat/docker-compose.yml, mode: "0644" }
+- community.docker.docker_compose_v2:
+    project_src: /opt/filebeat
+    state: present
+    recreate: "{{ 'always' if fb_cfg.changed else 'auto' }}"

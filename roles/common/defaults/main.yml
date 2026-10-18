@@ -1,0 +1,29 @@
+---
+common_packages:
+  - curl
+  - wget
+  - git
+  - vim
+  - htop
+  - iotop
+  - net-tools
+  - dnsutils
+  - jq
+  - unzip
+  - rsync
+  - sqlite3
+  - acl
+  - ufw
+  - chrony
+  - fail2ban
+  - unattended-upgrades
+  - ca-certificates
+  - gnupg
+  - apache2-utils
+  - python3-pip
+common_sysctl:
+  - { name: net.ipv4.ip_forward,        value: "1" }
+  - { name: net.ipv4.ip_nonlocal_bind,  value: "1" }   # bind روی IP وایرگارد قبل از بالا آمدن wg0
+  - { name: vm.swappiness,              value: "20" }
+  - { name: vm.max_map_count,           value: "262144" }  # Elasticsearch
+  - { name: fs.inotify.max_user_instances, value: "512" }

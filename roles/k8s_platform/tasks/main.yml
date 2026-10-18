@@ -1,0 +1,53 @@
+---
+- name: Wait for all nodes Ready
+  ansible.builtin.command: k3s kubectl wait --for=condition=Ready node --all --timeout=180s
+  changed_when: false
+  environment: { KUBECONFIG: /etc/rancher/k3s/k3s.yaml }
+
+- name: Namespaces
+  kubernetes.core.k8s: { state: present, template: namespaces.yml.j2 }
+
+- name: NFS dynamic provisioner (StorageClass nfs-client, RWX)
+  kubernetes.core.k8s: { state: present, template: nfs-provisioner.yml.j2 }
+
+- name: Secrets (apps + data)
+  kubernetes.core.k8s: { state: present, template: secrets.yml.j2 }
+  no_log: true
+
+- name: NetworkPolicies (default-deny + explicit allows)
+  kubernetes.core.k8s: { state: present, template: netpol.yml.j2 }
+
+- name: CloudNativePG operator (PostgreSQL cluster)
+  ansible.builtin.command: "k3s kubectl apply --server-side --force-conflicts -f {{ cnpg_manifest_url }}"
+  environment: { KUBECONFIG: /etc/rancher/k3s/k3s.yaml }
+  changed_when: false
+
+- name: kube-state-metrics + in-cluster blackbox (for Prometheus)
+  kubernetes.core.k8s: { state: present, template: monitoring-agents.yml.j2 }
+
+- name: Install ArgoCD
+  ansible.builtin.command: >
+    k3s kubectl apply --server-side --force-conflicts -n argocd
+    -f https://raw.githubusercontent.com/argoproj/argo-cd/{{ argocd_version }}/manifests/install.yaml
+  environment: { KUBECONFIG: /etc/rancher/k3s/k3s.yaml }
+  changed_when: false
+
+- name: ArgoCD behind nginx (HTTP internally) + NodePort
+  kubernetes.core.k8s:
+    state: patched
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata: { name: argocd-cmd-params-cm, namespace: argocd }
+      data: { "server.insecure": "true" }
+  notify: restart argocd-server
+- kubernetes.core.k8s:
+    state: patched
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata: { name: argocd-server, namespace: argocd }
+      spec:
+        type: NodePort
+        ports:
+          - { name: http, port: 80, targetPort: 8080, nodePort: "{{ np_argocd }}" }

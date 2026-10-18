@@ -1,0 +1,43 @@
+name: ci
+on:
+  push:
+    branches: [main]
+env:
+  REGISTRY: {{ registry_endpoint }}
+  IMAGE: {{ gitea_org }}/{{ repo }}
+  GITEA_HOST: {{ hub_ip }}:3000
+  GITOPS_FILE: apps/{{ repo }}/{{ repo }}.yaml
+{% raw %}
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    env:
+      CI_USER: ${{ secrets.CI_USER }}
+      CI_PASSWORD: ${{ secrets.CI_PASSWORD }}
+      REG_USER: ${{ secrets.REGISTRY_USER }}
+      REG_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+    steps:
+      - name: Checkout
+        run: git clone --depth 1 "http://$CI_USER:$CI_PASSWORD@$GITEA_HOST/${{ gitea.repository }}.git" src
+
+      - name: Build and push image (private registry)
+        run: |
+          cd src
+          SHA=$(git rev-parse --short HEAD)
+          echo "$SHA" > /tmp/sha
+          echo "$REG_PASSWORD" | docker login "$REGISTRY" -u "$REG_USER" --password-stdin
+          docker build -t "$REGISTRY/$IMAGE:$SHA" -t "$REGISTRY/$IMAGE:latest" .
+          docker push "$REGISTRY/$IMAGE:$SHA"
+          docker push "$REGISTRY/$IMAGE:latest"
+
+      - name: Bump image tag in GitOps repo (ArgoCD deploys it)
+        run: |
+          SHA=$(cat /tmp/sha)
+          git clone "http://$CI_USER:$CI_PASSWORD@$GITEA_HOST/${IMAGE%%/*}/gitops.git" gitops
+          cd gitops
+          sed -i -E "s#(image: $REGISTRY/$IMAGE):.*#\1:$SHA#" "$GITOPS_FILE"
+          git config user.name ci
+          git config user.email ci@maktab.internal
+          git commit -am "ci: $IMAGE -> $SHA" || exit 0
+          git push origin HEAD:main
+{% endraw %}

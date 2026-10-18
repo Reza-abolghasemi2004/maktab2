@@ -1,0 +1,9 @@
+---
+- name: reload prometheus
+  ansible.builtin.command: docker kill --signal=HUP prometheus
+- name: reload alertmanager
+  ansible.builtin.command: docker kill --signal=HUP alertmanager
+- name: reload blackbox
+  ansible.builtin.command: docker kill --signal=HUP blackbox
+- name: restart grafana
+  ansible.builtin.command: docker restart grafana

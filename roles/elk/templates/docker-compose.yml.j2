@@ -1,0 +1,48 @@
+# Managed by Ansible — حافظه برای VPS ۶ گیگ محدود شده است
+services:
+  elasticsearch:
+    image: hub.hamdocker.ir/elasticsearch:{{ elk_version }}
+    container_name: elasticsearch
+    restart: unless-stopped
+    mem_limit: 1536m
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false      # فقط روی تونل VPN در دسترس است
+      - ES_JAVA_OPTS=-Xms768m -Xmx768m
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 65536, hard: 65536 }
+    volumes: ["/srv/elasticsearch:/usr/share/elasticsearch/data"]
+    ports: ["{{ wg_ip }}:9200:9200"]
+
+  logstash:
+    image: hub.hamdocker.ir/logstash:{{ elk_version }}
+    container_name: logstash
+    restart: unless-stopped
+    mem_limit: 768m
+    depends_on: [elasticsearch]
+    environment:
+      - LS_JAVA_OPTS=-Xms384m -Xmx384m
+      - XPACK_MONITORING_ENABLED=false
+    volumes: ["./logstash/logstash.conf:/usr/share/logstash/pipeline/logstash.conf:ro"]
+    ports: ["{{ wg_ip }}:5044:5044"]
+
+  kibana:
+    image: hub.hamdocker.ir/kibana:{{ elk_version }}
+    container_name: kibana
+    restart: unless-stopped
+    mem_limit: 768m
+    depends_on: [elasticsearch]
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - SERVER_PUBLICBASEURL=https://kibana.{{ private_domain }}
+      - NODE_OPTIONS=--max-old-space-size=512
+    ports: ["{{ wg_ip }}:5601:5601"]
+
+  es-exporter:
+    image: hub.hamdocker.ir/prometheuscommunity/elasticsearch-exporter:v1.8.0
+    container_name: es-exporter
+    restart: unless-stopped
+    mem_limit: 64m
+    command: ["--es.uri=http://elasticsearch:9200", "--es.all"]
+    ports: ["{{ wg_ip }}:9114:9114"]

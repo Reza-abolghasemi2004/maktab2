@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Managed by Ansible
+# daily/ (Ns روز)  weekly/ (یکشنبه‌ها)  monthly/ (اول ماه)  → سپس rsync به vps2
+set -o pipefail
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+ROOT={{ backup_root }}
+TS=$(date +%F)
+DEST=$ROOT/daily/$TS
+STATE=$ROOT/.state
+PROM={{ node_exporter_textfile_dir }}/maktab_backup.prom
+KUBECTL="k3s kubectl"
+mkdir -p "$DEST" "$STATE" "$ROOT/weekly" "$ROOT/monthly"
+TMP=$(mktemp)
+{
+  echo "# TYPE maktab_backup_job_status gauge"
+  echo "# TYPE maktab_backup_last_success_timestamp_seconds gauge"
+} > "$TMP"
+
+record() { # name status duration size
+  local name=$1 status=$2 dur=$3 size=$4
+  [ "$status" = 1 ] && date +%s > "$STATE/$name.last_success"
+  local last; last=$(cat "$STATE/$name.last_success" 2>/dev/null || echo 0)
+  {
+    echo "maktab_backup_job_status{job_name=\"$name\"} $status"
+    echo "maktab_backup_duration_seconds{job_name=\"$name\"} $dur"
+    echo "maktab_backup_size_bytes{job_name=\"$name\"} $size"
+    echo "maktab_backup_last_success_timestamp_seconds{job_name=\"$name\"} $last"
+  } >> "$TMP"
+}
+
+run_job() { # name  output-file  function
+  local name=$1 out=$2 fn=$3 start end st=1
+  start=$(date +%s)
+  "$fn" || st=0
+  end=$(date +%s)
+  local size; size=$(stat -c %s "$DEST/$out" 2>/dev/null || echo 0)
+  [ "$size" -gt 0 ] || st=0
+  record "$name" "$st" "$((end-start))" "$size"
+}
+
+job_postgres() {
+  local pod
+  pod=$($KUBECTL -n data get pod -l cnpg.io/cluster=pg-main,cnpg.io/instanceRole=primary -o jsonpath='{.items[0].metadata.name}') || return 1
+  $KUBECTL -n data exec "$pod" -c postgres -- pg_dumpall | gzip > "$DEST/postgres.sql.gz"
+}
+job_mariadb() {
+  $KUBECTL -n data exec mariadb-0 -- sh -c 'exec mariadb-dump --all-databases --single-transaction -uroot -p"$MARIADB_ROOT_PASSWORD"' | gzip > "$DEST/mariadb.sql.gz"
+}
+job_gitea() {
+  docker exec -u git gitea gitea dump -c /data/gitea/conf/app.ini -f /tmp/gitea-dump.zip --type zip >/dev/null 2>&1 || return 1
+  docker cp gitea:/tmp/gitea-dump.zip "$DEST/gitea.zip" && docker exec gitea rm -f /tmp/gitea-dump.zip
+}
+tar_ok() { local rc=$?; [ $rc -le 1 ]; }   # rc=1: file changed while reading
+job_wordpress_files() { tar czf "$DEST/wordpress-nfs.tar.gz" -C "$(dirname {{ nfs_export_path }})" "$(basename {{ nfs_export_path }})"; tar_ok; }
+job_registry()        { tar czf "$DEST/registry.tar.gz" -C /srv registry; tar_ok; }
+job_k3s_state() {
+  sqlite3 /var/lib/rancher/k3s/server/db/state.db ".backup '/tmp/k3s-state.db'" || return 1
+  gzip -c /tmp/k3s-state.db > "$DEST/k3s-state.db.gz"; rm -f /tmp/k3s-state.db
+}
+job_configs() {
+  tar czf "$DEST/configs.tar.gz" /etc/wireguard /etc/maktab /etc/teleport.yaml /var/lib/teleport \
+      /etc/rancher/k3s /etc/bind /etc/nginx /etc/ufw /opt 2>/dev/null; tar_ok
+}
+
+run_job postgres   postgres.sql.gz     job_postgres
+run_job mariadb    mariadb.sql.gz      job_mariadb
+run_job gitea      gitea.zip           job_gitea
+run_job wordpress  wordpress-nfs.tar.gz job_wordpress_files
+run_job registry   registry.tar.gz     job_registry
+run_job k3s_state  k3s-state.db.gz     job_k3s_state
+run_job configs    configs.tar.gz      job_configs
+
+# ───── Retention (GFS): daily / weekly / monthly ─────
+if [ "$(date +%u)" = 7 ]; then W=$ROOT/weekly/$(date +%G-W%V); rm -rf "$W"; cp -al "$DEST" "$W"; fi
+if [ "$(date +%d)" = 01 ]; then M=$ROOT/monthly/$(date +%Y-%m); rm -rf "$M"; cp -al "$DEST" "$M"; fi
+find "$ROOT/daily"   -mindepth 1 -maxdepth 1 -type d -mtime +{{ backup_keep_daily }}   -exec rm -rf {} +
+find "$ROOT/weekly"  -mindepth 1 -maxdepth 1 -type d -mtime +{{ backup_keep_weekly }}  -exec rm -rf {} +
+find "$ROOT/monthly" -mindepth 1 -maxdepth 1 -type d -mtime +{{ backup_keep_monthly }} -exec rm -rf {} +
+
+# ───── Offsite copy to vps2 ─────
+start=$(date +%s); st=1
+rsync -aH --delete -e "ssh -i /root/.ssh/backup_ed25519 -o StrictHostKeyChecking=accept-new" \
+  "$ROOT"/ {{ backup_remote_user }}@{{ worker_ip }}:{{ backup_remote_dir }}/ || st=0
+record offsite_rsync "$st" "$(( $(date +%s) - start ))" "$(du -sb "$ROOT" | cut -f1)"
+
+{
+  echo "maktab_backup_run_timestamp_seconds $(date +%s)"
+  echo "maktab_backup_daily_copies $(find "$ROOT/daily" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+  echo "maktab_backup_weekly_copies $(find "$ROOT/weekly" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+  echo "maktab_backup_monthly_copies $(find "$ROOT/monthly" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+} >> "$TMP"
+chmod 644 "$TMP"; mv "$TMP" "$PROM"

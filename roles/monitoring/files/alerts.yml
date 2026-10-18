@@ -1,0 +1,163 @@
+groups:
+  - name: vm-resources
+    rules:
+      - alert: NodeDown
+        expr: up{job="node"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations: { summary: "node_exporter down on {{ $labels.instance }}" }
+      - alert: HighCPU
+        expr: avg by(instance)(1 - rate(node_cpu_seconds_total{mode="idle"}[5m])) > 0.85
+        for: 10m
+        labels: { severity: warning }
+        annotations: { summary: "CPU > 85% on {{ $labels.instance }}" }
+      - alert: HighMemory
+        expr: 1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes > 0.90
+        for: 10m
+        labels: { severity: warning }
+        annotations: { summary: "RAM > 90% on {{ $labels.instance }}" }
+      - alert: SwapHeavy
+        expr: 1 - node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes > 0.6
+        for: 15m
+        labels: { severity: warning }
+        annotations: { summary: "Swap > 60% on {{ $labels.instance }}" }
+      - alert: DiskSpaceLow
+        expr: node_filesystem_avail_bytes{fstype=~"ext4|xfs"} / node_filesystem_size_bytes{fstype=~"ext4|xfs"} < 0.15
+        for: 10m
+        labels: { severity: warning }
+        annotations: { summary: "Disk < 15% free ({{ $labels.mountpoint }}) on {{ $labels.instance }}" }
+      - alert: DiskSpaceCritical
+        expr: node_filesystem_avail_bytes{fstype=~"ext4|xfs"} / node_filesystem_size_bytes{fstype=~"ext4|xfs"} < 0.05
+        for: 5m
+        labels: { severity: critical }
+        annotations: { summary: "Disk < 5% free ({{ $labels.mountpoint }}) on {{ $labels.instance }}" }
+      - alert: DiskIOSaturated
+        expr: rate(node_disk_io_time_seconds_total{device!~"loop.*|dm-.*"}[5m]) > 0.9
+        for: 10m
+        labels: { severity: warning }
+        annotations: { summary: "Disk {{ $labels.device }} busy > 90% on {{ $labels.instance }}" }
+      - alert: HighIOPS
+        expr: sum by(instance,device)(rate(node_disk_reads_completed_total[5m]) + rate(node_disk_writes_completed_total[5m])) > 2000
+        for: 10m
+        labels: { severity: warning }
+        annotations: { summary: "IOPS > 2000 on {{ $labels.instance }} ({{ $labels.device }})" }
+      - alert: NetworkErrors
+        expr: sum by(instance,device)(rate(node_network_receive_errs_total[5m]) + rate(node_network_transmit_errs_total[5m])) > 5
+        for: 10m
+        labels: { severity: warning }
+        annotations: { summary: "Network errors on {{ $labels.instance }} ({{ $labels.device }})" }
+      - alert: NetworkTrafficHigh
+        expr: rate(node_network_receive_bytes_total{device!~"lo|veth.*|docker.*|br-.*|cni.*|flannel.*"}[5m]) * 8 > 400e6
+        for: 15m
+        labels: { severity: warning }
+        annotations: { summary: "Inbound traffic > 400 Mbit/s on {{ $labels.instance }}" }
+
+  - name: domains-certificates
+    rules:
+      - alert: DomainDown
+        expr: probe_success{job="blackbox_http"} == 0
+        for: 3m
+        labels: { severity: critical }
+        annotations: { summary: "{{ $labels.instance }} is not reachable" }
+      - alert: DomainBadStatusCode
+        expr: probe_http_status_code{job="blackbox_http"} >= 400
+        for: 3m
+        labels: { severity: critical }
+        annotations: { summary: "{{ $labels.instance }} returns HTTP {{ $value }}" }
+      - alert: CertExpiringSoon
+        expr: (probe_ssl_earliest_cert_expiry{job="blackbox_http"} - time()) / 86400 < 14
+        for: 1h
+        labels: { severity: warning }
+        annotations: { summary: "TLS cert of {{ $labels.instance }} expires in {{ $value | humanize }} days" }
+      - alert: CertExpiryCritical
+        expr: (probe_ssl_earliest_cert_expiry{job="blackbox_http"} - time()) / 86400 < 3
+        for: 10m
+        labels: { severity: critical }
+        annotations: { summary: "TLS cert of {{ $labels.instance }} expires in < 3 days" }
+
+  - name: services
+    rules:
+      - alert: ServiceDown
+        expr: probe_success{job=~"blackbox_tcp_.*"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations: { summary: "TCP service down: {{ $labels.instance }} (PostgreSQL / Redis / MariaDB / Logstash / Registry)" }
+
+  - name: kubernetes
+    rules:
+      - alert: KubeStateMetricsDown
+        expr: up{job="kube-state-metrics"} == 0
+        for: 3m
+        labels: { severity: critical }
+        annotations: { summary: "Cluster metrics unavailable — API/cluster may be down" }
+      - alert: KubeNodeNotReady
+        expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+        for: 3m
+        labels: { severity: critical }
+        annotations: { summary: "Node {{ $labels.node }} is NotReady" }
+      - alert: KubePodCrashLooping
+        expr: increase(kube_pod_container_status_restarts_total[15m]) > 3
+        for: 5m
+        labels: { severity: warning }
+        annotations: { summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is restarting repeatedly" }
+      - alert: KubePodNotRunning
+        expr: sum by(namespace,pod)(kube_pod_status_phase{phase=~"Pending|Failed|Unknown"}) > 0
+        for: 15m
+        labels: { severity: warning }
+        annotations: { summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} not running" }
+      - alert: KubeDeploymentReplicasMismatch
+        expr: kube_deployment_spec_replicas != kube_deployment_status_replicas_available
+        for: 10m
+        labels: { severity: warning }
+        annotations: { summary: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} replicas unavailable" }
+      - alert: KubeStatefulSetReplicasMismatch
+        expr: kube_statefulset_status_replicas_ready != kube_statefulset_replicas
+        for: 10m
+        labels: { severity: warning }
+        annotations: { summary: "StatefulSet {{ $labels.namespace }}/{{ $labels.statefulset }} not fully ready" }
+      - alert: KubePVCPending
+        expr: kube_persistentvolumeclaim_status_phase{phase="Pending"} == 1
+        for: 10m
+        labels: { severity: warning }
+        annotations: { summary: "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} Pending" }
+
+  - name: elk
+    rules:
+      - alert: ElasticsearchDown
+        expr: up{job="elasticsearch"} == 0
+        for: 3m
+        labels: { severity: critical }
+        annotations: { summary: "Elasticsearch exporter/cluster down" }
+      - alert: ElasticsearchRed
+        expr: elasticsearch_cluster_health_status{color="red"} == 1
+        for: 2m
+        labels: { severity: critical }
+        annotations: { summary: "Elasticsearch cluster status RED" }
+      - alert: ElasticsearchYellow
+        expr: elasticsearch_cluster_health_status{color="yellow"} == 1
+        for: 20m
+        labels: { severity: warning }
+        annotations: { summary: "Elasticsearch cluster status YELLOW" }
+      - alert: ElasticsearchHeapHigh
+        expr: elasticsearch_jvm_memory_used_bytes{area="heap"} / elasticsearch_jvm_memory_max_bytes{area="heap"} > 0.9
+        for: 15m
+        labels: { severity: warning }
+        annotations: { summary: "Elasticsearch heap > 90%" }
+
+  - name: backups
+    rules:
+      - alert: BackupJobFailed
+        expr: maktab_backup_job_status == 0
+        for: 5m
+        labels: { severity: critical }
+        annotations: { summary: "Backup job {{ $labels.job_name }} failed" }
+      - alert: BackupTooOld
+        expr: time() - maktab_backup_last_success_timestamp_seconds > 93600
+        for: 10m
+        labels: { severity: critical }
+        annotations: { summary: "Backup {{ $labels.job_name }} has no success for > 26h" }
+      - alert: BackupMetricsMissing
+        expr: absent_over_time(maktab_backup_run_timestamp_seconds[2d])
+        for: 10m
+        labels: { severity: critical }
+        annotations: { summary: "No backup run recorded in the last 2 days" }

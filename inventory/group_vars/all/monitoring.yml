@@ -1,0 +1,30 @@
+---
+# ───────── Alerting ─────────
+alert_channel: telegram          # telegram | email | slack
+telegram_bot_token: "CHANGE_ME"
+telegram_chat_id: 0              # عدد chat id
+smtp_host: "smtp.example.com:587"
+smtp_from: "alerts@example.com"
+smtp_user: "alerts@example.com"
+smtp_password: "CHANGE_ME"
+alert_email_to: "ops@example.com"
+slack_webhook_url: "CHANGE_ME"
+
+# ───────── Probes ─────────
+probe_http_targets:
+  - "https://{{ wp_fqdn }}"
+  - "https://{{ app_fqdn }}"
+  - "https://gitea.{{ private_domain }}"
+  - "https://argocd.{{ private_domain }}"
+  - "https://grafana.{{ private_domain }}"
+  - "https://kibana.{{ private_domain }}"
+  - "https://teleport.{{ private_domain }}:3080/webapi/ping"
+
+probe_tcp_host_targets:             # از روی vps2 (host)
+  - "{{ worker_ip }}:5044"          # logstash
+  - "{{ hub_ip }}:5000"             # registry
+
+probe_tcp_k8s_targets:              # از داخل کلاستر (blackbox-k8s)
+  - "pg-main-rw.data.svc.cluster.local:5432"     # PostgreSQL
+  - "redis.data.svc.cluster.local:6379"          # Redis
+  - "mariadb.data.svc.cluster.local:3306"        # MariaDB (WordPress)

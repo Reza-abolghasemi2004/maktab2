@@ -1,0 +1,10 @@
+---
+- import_playbook: 00-secrets.yml
+- import_playbook: 01-prepare-vm.yml
+- import_playbook: 02-firewall.yml
+- import_playbook: 03-access.yml
+- import_playbook: 04-kubernetes.yml
+- import_playbook: 05-platform.yml
+- import_playbook: 06-monitoring.yml
+- import_playbook: 07-backup.yml
+#- import_playbook: 08-verify.yml

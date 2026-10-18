@@ -1,0 +1,5 @@
+zone "{{ private_domain }}" {
+    type master;
+    file "/etc/bind/db.{{ private_domain }}";
+    allow-transfer { none; };
+};

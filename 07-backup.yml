@@ -1,0 +1,6 @@
+---
+- name: "Task 7 - Backups (+ retention + monitoring metrics)"
+  hosts: vps
+  roles: [backup]
+  any_errors_fatal: true
+

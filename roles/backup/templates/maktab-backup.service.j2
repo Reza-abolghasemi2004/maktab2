@@ -1,0 +1,9 @@
+[Unit]
+Description=Maktab backup (databases, git, registry, configs → offsite copy)
+After=docker.service k3s.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/maktab-backup.sh
+Nice=10
+IOSchedulingClass=idle

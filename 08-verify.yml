@@ -1,0 +1,628 @@
+---
+# Read-oriented post-deployment assertions for the Maktab DevOps stack.
+# This playbook deliberately fails when a configured component is missing/unhealthy.
+# It does not change service configuration or run the backup job.
+
+- name: Verify host services, Docker workloads, UFW and WireGuard
+  hosts: vps
+  become: true
+  gather_facts: false
+  vars:
+    verify_units: >-
+      {{ ['ssh', 'docker', 'chrony', 'fail2ban', 'teleport', 'prometheus-node-exporter', 'wg-quick@wg0'] +
+         (['bind9', 'nfs-kernel-server', 'k3s', 'nginx', 'maktab-backup.timer']
+          if inventory_hostname in groups['edge'] else ['k3s-agent']) }}
+    verify_containers: >-
+      {{ ['gitea', 'registry', 'act_runner', 'filebeat']
+         if inventory_hostname in groups['edge'] else
+         ['elasticsearch', 'logstash', 'kibana', 'es-exporter', 'filebeat',
+          'prometheus', 'alertmanager', 'blackbox', 'grafana'] }}
+  tasks:
+    - name: Read systemd state for every required unit
+      ansible.builtin.command: "systemctl is-active {{ item }}"
+      loop: "{{ verify_units }}"
+      register: verify_unit_results
+      changed_when: false
+      failed_when: false
+
+    - name: Check UFW state
+      ansible.builtin.command: ufw status
+      register: verify_ufw
+      changed_when: false
+      failed_when: false
+
+    - name: Check for a recent WireGuard peer handshake
+      ansible.builtin.shell: >-
+        wg show wg0 latest-handshakes |
+        awk -v now="$(date +%s)" '$2 ~ /^[0-9]+$/ && $2 > 0 && now-$2 < 300 {ok=1} END {exit !ok}'
+      args:
+        executable: /bin/bash
+      register: verify_wg_handshake
+      changed_when: false
+      failed_when: false
+
+    - name: Read Docker container states
+      ansible.builtin.shell: |
+        set -u
+        for name in {{ verify_containers | join(' ') }}; do
+          if ! docker inspect "$name" >/dev/null 2>&1; then
+            printf '%s=missing\n' "$name"
+            continue
+          fi
+          state=$(docker inspect "$name" | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["State"]["Status"])')
+          printf '%s=%s\n' "$name" "$state"
+        done
+      args:
+        executable: /bin/bash
+      register: verify_container_states
+      changed_when: false
+      failed_when: false
+
+    - name: Check node_exporter endpoint
+      ansible.builtin.uri:
+        url: "http://{{ wg_ip }}:9100/metrics"
+        status_code: 200
+        return_content: false
+      register: verify_node_exporter
+      changed_when: false
+      failed_when: false
+
+    - name: Assert host-level health
+      ansible.builtin.assert:
+        that:
+          - (verify_unit_results.results | rejectattr('rc', 'equalto', 0) | list | length) == 0
+          - "'Status: active' in verify_ufw.stdout"
+          - verify_wg_handshake.rc == 0
+          - (verify_container_states.stdout_lines | select('search', '=running$') | list | length) == (verify_containers | length)
+          - (verify_node_exporter.status | default(0) | int) == 200
+        fail_msg: >-
+          Host checks failed. Inactive units={{ verify_unit_results.results |
+          rejectattr('rc', 'equalto', 0) | map(attribute='item') | list }};
+          UFW={{ verify_ufw.stdout | default('no output') }};
+          WireGuard recent handshake rc={{ verify_wg_handshake.rc | default('unknown') }};
+          containers={{ verify_container_states.stdout_lines | default([]) }};
+          node_exporter_http={{ verify_node_exporter.status | default(0) }}.
+        success_msg: "Host-managed services, containers, UFW, WireGuard and node_exporter passed on {{ inventory_hostname }}."
+
+- name: Verify private DNS, Gitea, Registry, Nginx TLS vhosts and Teleport
+  hosts: edge
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Validate Nginx syntax
+      ansible.builtin.command: nginx -t
+      changed_when: false
+
+    - name: Query every configured private DNS record
+      ansible.builtin.command: "dig +short @{{ hub_ip }} {{ item.name }}.{{ private_domain }}"
+      loop: "{{ dns_records }}"
+      loop_control:
+        label: "{{ item.name }}.{{ private_domain }}"
+      register: verify_dns_results
+      changed_when: false
+      failed_when: false
+
+    - name: Check Gitea direct health endpoint
+      ansible.builtin.uri:
+        url: "http://{{ hub_ip }}:3000/api/healthz"
+        status_code: 200
+        return_content: true
+      register: verify_gitea_health
+      changed_when: false
+      failed_when: false
+
+    - name: Check private registry authenticated API
+      ansible.builtin.uri:
+        url: "http://{{ registry_endpoint }}/v2/"
+        method: GET
+        user: "{{ registry_user }}"
+        password: "{{ registry_password }}"
+        force_basic_auth: true
+        status_code: 200
+        return_content: false
+      register: verify_registry_health
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Check authenticated Gitea branches exist remotely
+      ansible.builtin.uri:
+        url: "http://{{ hub_ip }}:3000/api/v1/repos/{{ gitea_org }}/{{ item }}/branches/main"
+        method: GET
+        user: "{{ gitea_admin_user }}"
+        password: "{{ gitea_admin_password }}"
+        force_basic_auth: true
+        status_code: 200
+        return_content: false
+      loop: [gitops, backend, frontend]
+      loop_control:
+        label: "{{ item }}:main"
+      register: verify_remote_branches
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Check private HTTPS virtual hosts with the private CA
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --silent
+          - --show-error
+          - --output
+          - /dev/null
+          - --write-out
+          - "%{http_code}"
+          - --cacert
+          - /usr/local/share/ca-certificates/maktab-ca.crt
+          - --resolve
+          - "{{ item.host }}.{{ private_domain }}:443:{{ hub_ip }}"
+          - "https://{{ item.host }}.{{ private_domain }}{{ item.path }}"
+      loop:
+        - { host: gitea, path: /api/healthz, expected: ['200'] }
+        - { host: argocd, path: /, expected: ['200', '301', '302'] }
+        - { host: grafana, path: /api/health, expected: ['200'] }
+        - { host: prometheus, path: /-/ready, expected: ['200'] }
+        - { host: alertmanager, path: /-/ready, expected: ['200'] }
+        - { host: kibana, path: /api/status, expected: ['200', '302'] }
+      loop_control:
+        label: "{{ item.host }}{{ item.path }}"
+      register: verify_https_vhosts
+      changed_when: false
+      failed_when: false
+
+    - name: Check Teleport proxy health over TLS
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --silent
+          - --show-error
+          - --output
+          - /dev/null
+          - --write-out
+          - "%{http_code}"
+          - --cacert
+          - /usr/local/share/ca-certificates/maktab-ca.crt
+          - --resolve
+          - "teleport.{{ private_domain }}:3080:{{ hub_ip }}"
+          - "https://teleport.{{ private_domain }}:3080/webapi/ping"
+      register: verify_teleport_proxy
+      changed_when: false
+      failed_when: false
+
+    - name: Generate unique URI marker for end-to-end log ingestion test
+      ansible.builtin.set_fact:
+        verify_log_marker_path: "/__maktab_log_audit_{{ lookup('ansible.builtin.pipe', 'date +%s') }}"
+
+    - name: Send a synthetic request through Nginx to create an access-log event
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --silent
+          - --show-error
+          - --output
+          - /dev/null
+          - --write-out
+          - "%{http_code}"
+          - --cacert
+          - /usr/local/share/ca-certificates/maktab-ca.crt
+          - --resolve
+          - "gitea.{{ private_domain }}:443:{{ hub_ip }}"
+          - "https://gitea.{{ private_domain }}{{ verify_log_marker_path }}"
+      register: verify_log_marker_request
+      changed_when: false
+      failed_when: false
+
+    - name: Confirm Teleport has registered the worker node
+      ansible.builtin.command: tctl nodes ls
+      register: verify_teleport_nodes
+      changed_when: false
+      failed_when: false
+
+    - name: Check whether public certificate covers both public application hostnames
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - x509
+          - -in
+          - "{{ edge_public_cert }}"
+          - -noout
+          - -checkhost
+          - "{{ item }}"
+      loop: ["{{ wp_fqdn }}", "{{ app_fqdn }}"]
+      loop_control:
+        label: "{{ item }}"
+      register: verify_public_cert_names
+      changed_when: false
+      failed_when: false
+
+    - name: Check whether the public certificate is currently valid
+      ansible.builtin.command:
+        argv: [openssl, x509, -in, "{{ edge_public_cert }}", -noout, -checkend, "0"]
+      register: verify_public_cert_expiry
+      changed_when: false
+      failed_when: false
+
+    - name: Check whether act_runner has registered with Gitea
+      ansible.builtin.stat:
+        path: /srv/act_runner/.runner
+      register: verify_runner_registration
+
+    - name: Validate backup script shell syntax
+      ansible.builtin.command: bash -n /usr/local/sbin/maktab-backup.sh
+      register: verify_backup_syntax
+      changed_when: false
+      failed_when: false
+
+    - name: Verify offsite backup destination is reachable and writable
+      ansible.builtin.command:
+        argv:
+          - ssh
+          - -i
+          - /root/.ssh/backup_ed25519
+          - -o
+          - BatchMode=yes
+          - -o
+          - ConnectTimeout=5
+          - -o
+          - StrictHostKeyChecking=accept-new
+          - "{{ backup_remote_user }}@{{ worker_ip }}"
+          - "test -d '{{ backup_remote_dir }}' && test -w '{{ backup_remote_dir }}'"
+      register: verify_backup_destination
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Verify last backup run recorded all successful backup jobs
+      ansible.builtin.shell: |
+        set -euo pipefail
+        metrics="{{ node_exporter_textfile_dir }}/maktab_backup.prom"
+        test -s "$metrics" || { echo "BACKUP_METRICS_MISSING"; exit 2; }
+        awk '
+          /^maktab_backup_job_status\{/ {
+            total++
+            if ($2 != 1) { print; bad=1 }
+          }
+          END {
+            if (total != 8) {
+              printf "EXPECTED_8_BACKUP_JOB_METRICS_GOT_%d\n", total
+              bad=1
+            }
+            exit bad
+          }
+        ' "$metrics"
+      args:
+        executable: /bin/bash
+      register: verify_backup_metrics
+      changed_when: false
+      failed_when: false
+
+    - name: Validate private DNS record answers
+      ansible.builtin.assert:
+        that:
+          - (item.stdout | trim) == item.item.ip
+        fail_msg: "DNS mismatch for {{ item.item.name }}.{{ private_domain }}: expected {{ item.item.ip }}, got {{ item.stdout | trim }}"
+      loop: "{{ verify_dns_results.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    - name: Assert every private HTTPS vhost returns an expected status
+      ansible.builtin.assert:
+        that:
+          - item.rc == 0
+          - (item.stdout | trim) in item.item.expected
+        fail_msg: "HTTPS vhost {{ item.item.host }}{{ item.item.path }} failed: rc={{ item.rc }}, HTTP={{ item.stdout | default('000') }}"
+      loop: "{{ verify_https_vhosts.results }}"
+      loop_control:
+        label: "{{ item.item.host }}{{ item.item.path }}"
+
+    - name: Assert Gitea, Registry, Git repositories, HTTPS vhosts and Teleport
+      ansible.builtin.assert:
+        that:
+          - (verify_gitea_health.status | default(0) | int) == 200
+          - (verify_registry_health.status | default(0) | int) == 200
+          - (verify_remote_branches.results | rejectattr('status', 'defined') | list | length) == 0
+          - (verify_remote_branches.results | selectattr('status', 'defined') | rejectattr('status', 'equalto', 200) | list | length) == 0
+          - (verify_teleport_proxy.stdout | default('')) == '200'
+          - verify_teleport_nodes.rc == 0
+          - "'vps2' in verify_teleport_nodes.stdout"
+          - verify_log_marker_request.rc == 0
+          - (verify_public_cert_names.results | rejectattr('rc', 'equalto', 0) | list | length) == 0
+          - verify_public_cert_expiry.rc == 0
+          - verify_runner_registration.stat.exists
+          - verify_backup_syntax.rc == 0
+          - verify_backup_destination.rc == 0
+          - verify_backup_metrics.rc == 0
+        fail_msg: >-
+          Edge/application checks have failures. Gitea={{ verify_gitea_health.status | default(0) }};
+          Registry HTTP={{ verify_registry_health.status | default(0) }};
+          Git branch checks={{ verify_remote_branches.results | map(attribute='item') | list }};
+          HTTPS probes={{ verify_https_vhosts.results | map(attribute='item.host') | list }};
+          Teleport HTTP={{ verify_teleport_proxy.stdout | default('000') }};
+          Teleport registered nodes={{ verify_teleport_nodes.stdout | default('unavailable') }};
+          Nginx marker request rc={{ verify_log_marker_request.rc | default(1) }};
+          Public certificate hostname checks={{ verify_public_cert_names.results | map(attribute='rc') | list }};
+          public certificate expiry rc={{ verify_public_cert_expiry.rc | default(1) }};
+          runner_registered={{ verify_runner_registration.stat.exists | default(false) }};
+          backup_script_syntax_rc={{ verify_backup_syntax.rc | default(1) }};
+          backup_destination_rc={{ verify_backup_destination.rc | default(1) }};
+          backup_metrics_rc={{ verify_backup_metrics.rc | default(1) }} (actual backup run and restore must also be tested).
+        success_msg: "Gitea, Registry, Git remotes, internal HTTPS endpoints, Teleport and public TLS checks passed."
+
+- name: Verify worker-to-hub connectivity, NFS read/write and observability endpoints
+  hosts: worker
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check critical hub ports from worker
+      ansible.builtin.shell: "timeout 3 bash -c '</dev/tcp/{{ hub_ip }}/{{ item }}' 2>/dev/null"
+      args:
+        executable: /bin/bash
+      loop: [2049, 3000, 3025, 3080, 5000, 6443]
+      register: verify_hub_ports
+      changed_when: false
+      failed_when: false
+
+    - name: Query every configured private DNS record from the worker
+      ansible.builtin.command: "dig +short @{{ hub_ip }} {{ item.name }}.{{ private_domain }}"
+      loop: "{{ dns_records }}"
+      loop_control:
+        label: "{{ item.name }}.{{ private_domain }}"
+      register: verify_worker_dns_results
+      changed_when: false
+      failed_when: false
+
+    - name: Check NFS export by mounting and writing a disposable marker
+      ansible.builtin.shell: |
+        set -euo pipefail
+        mount_dir=$(mktemp -d /tmp/maktab-nfs-check.XXXXXX)
+        mounted=0
+        cleanup() {
+          if [ "$mounted" -eq 1 ]; then umount "$mount_dir"; fi
+          rmdir "$mount_dir" 2>/dev/null || true
+        }
+        trap cleanup EXIT
+        mount -t nfs -o vers=4,soft,timeo=30,retrans=1 "{{ hub_ip }}:{{ nfs_export_path }}" "$mount_dir"
+        mounted=1
+        marker="$mount_dir/.ansible-verify-$(hostname)-$$"
+        printf 'verify-ok' > "$marker"
+        test "$(cat "$marker")" = 'verify-ok'
+        rm -f "$marker"
+      args:
+        executable: /bin/bash
+      register: verify_nfs_rw
+      changed_when: false
+      failed_when: false
+
+    - name: Check Elasticsearch health
+      ansible.builtin.uri:
+        url: "http://{{ wg_ip }}:9200/_cluster/health"
+        status_code: 200
+        return_content: true
+      register: verify_es_health
+      changed_when: false
+      failed_when: false
+
+    - name: Check Grafana readiness
+      ansible.builtin.uri:
+        url: "http://{{ wg_ip }}:3001/api/health"
+        status_code: 200
+        return_content: true
+      register: verify_grafana_health
+      changed_when: false
+      failed_when: false
+
+    - name: Check Prometheus readiness and active target health
+      ansible.builtin.uri:
+        url: "http://{{ wg_ip }}:9090/api/v1/targets"
+        status_code: 200
+        return_content: true
+      register: verify_prometheus_targets
+      changed_when: false
+      failed_when: false
+      retries: 12
+      delay: 10
+      until:
+        - (verify_prometheus_targets.status | default(0) | int) == 200
+        - (verify_prometheus_targets.json.status | default('error')) == 'success'
+        - (verify_prometheus_targets.json.data.activeTargets | default([]) | length) > 0
+        - (verify_prometheus_targets.json.data.activeTargets | default([]) | rejectattr('health', 'equalto', 'up') | list | length) == 0
+
+    - name: Check Alertmanager readiness
+      ansible.builtin.uri:
+        url: "http://{{ wg_ip }}:9093/-/ready"
+        status_code: 200
+        return_content: false
+      register: verify_alertmanager_health
+      changed_when: false
+      failed_when: false
+
+    - name: Check Logstash Beats input
+      ansible.builtin.wait_for:
+        host: "{{ wg_ip }}"
+        port: 5044
+        timeout: 5
+        state: started
+      register: verify_logstash_port
+      failed_when: false
+
+    - name: Allow Filebeat and Logstash to ship the synthetic test event
+      ansible.builtin.pause:
+        seconds: 25
+
+    - name: Search Elasticsearch for the synthetic Nginx access-log event
+      ansible.builtin.uri:
+        url: "http://{{ wg_ip }}:9200/nginx-*/_search"
+        method: POST
+        body_format: json
+        body:
+          size: 1
+          query:
+            term:
+              uri: "{{ hostvars[groups['edge'][0]].verify_log_marker_path }}"
+        status_code: 200
+        return_content: true
+      register: verify_log_search
+      changed_when: false
+      failed_when: false
+
+    - name: Assert private DNS works from the worker
+      ansible.builtin.assert:
+        that:
+          - (item.stdout | trim) == item.item.ip
+        fail_msg: "Worker DNS mismatch for {{ item.item.name }}.{{ private_domain }}: expected {{ item.item.ip }}, got {{ item.stdout | trim }}"
+      loop: "{{ verify_worker_dns_results.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    - name: Assert monitoring and logging health
+      ansible.builtin.assert:
+        that:
+          - (verify_hub_ports.results | rejectattr('rc', 'equalto', 0) | list | length) == 0
+          - (verify_nfs_rw.rc | default(1) | int) == 0
+          - (verify_es_health.status | default(0) | int) == 200
+          - (verify_es_health.json.status | default('red')) in ['yellow', 'green']
+          - (verify_grafana_health.status | default(0) | int) == 200
+          - (verify_prometheus_targets.status | default(0) | int) == 200
+          - (verify_prometheus_targets.json.status | default('error')) == 'success'
+          - (verify_prometheus_targets.json.data.activeTargets | default([]) | length) > 0
+          - (verify_prometheus_targets.json.data.activeTargets | default([]) | rejectattr('health', 'equalto', 'up') | list | length) == 0
+          - (verify_alertmanager_health.status | default(0) | int) == 200
+          - (verify_logstash_port.failed | default(false)) == false
+          - (verify_log_search.status | default(0) | int) == 200
+          - (verify_log_search.json.hits.total.value | default(0) | int) > 0
+          - "alert_channel != 'telegram' or telegram_bot_token not in ['', 'CHANGE_ME']"
+          - "alert_channel != 'telegram' or (telegram_chat_id | int) != 0"
+        fail_msg: >-
+          Worker checks failed. hub-port failures={{ verify_hub_ports.results | rejectattr('rc', 'equalto', 0) | map(attribute='item') | list }};
+          NFS rc={{ verify_nfs_rw.rc | default(1) }};
+          Elasticsearch={{ verify_es_health.json.status | default('unavailable') }};
+          Grafana HTTP={{ verify_grafana_health.status | default(0) }};
+          Prometheus HTTP={{ verify_prometheus_targets.status | default(0) }};
+          non-UP targets={{ verify_prometheus_targets.json.data.activeTargets | default([]) | rejectattr('health', 'equalto', 'up') | map(attribute='labels.instance') | list }};
+          Alertmanager HTTP={{ verify_alertmanager_health.status | default(0) }};
+          Logstash failed={{ verify_logstash_port.failed | default(false) }};
+          log-event count={{ verify_log_search.json.hits.total.value | default(0) }};
+          alert channel={{ alert_channel }} (credentials are not printed).
+        success_msg: "Worker-to-hub network, NFS, Elasticsearch, Grafana, Prometheus, Alertmanager and Logstash passed."
+
+
+- name: Verify K3s runtime, workloads, PVCs and Argo CD reconciliation
+  hosts: k3s_server
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read cluster nodes
+      ansible.builtin.command: k3s kubectl get nodes -o wide
+      register: verify_k8s_nodes
+      changed_when: false
+      failed_when: false
+
+    - name: Check all non-completed pods are Running
+      ansible.builtin.shell: |
+        set -o pipefail
+        k3s kubectl get pods -A --no-headers | awk '$4 != "Running" && $4 != "Completed" {print; bad=1} END {if (NR == 0) {print "NO_PODS"; exit 2} exit bad}'
+      args:
+        executable: /bin/bash
+      register: verify_k8s_pods
+      changed_when: false
+      failed_when: false
+
+    - name: Check every deployment has desired replicas ready
+      ansible.builtin.shell: |
+        set -o pipefail
+        k3s kubectl get deployments -A -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name,DESIRED:.spec.replicas,READY:.status.readyReplicas --no-headers |
+          awk '$3 != $4 {print; bad=1} END {if (NR == 0) {print "NO_DEPLOYMENTS"; exit 2} exit bad}'
+      args:
+        executable: /bin/bash
+      register: verify_k8s_deployments
+      changed_when: false
+      failed_when: false
+
+    - name: Check every PVC is Bound
+      ansible.builtin.shell: |
+        set -o pipefail
+        k3s kubectl get pvc -A --no-headers | awk '$3 != "Bound" {print; bad=1} END {if (NR == 0) {print "NO_PVCS"; exit 2} exit bad}'
+      args:
+        executable: /bin/bash
+      register: verify_k8s_pvcs
+      changed_when: false
+      failed_when: false
+
+    - name: Check that every non-completed pod has all containers Ready
+      ansible.builtin.shell: |
+        set -euo pipefail
+        pods_json=$(k3s kubectl get pods -A -o json)
+        count=$(printf '%s' "$pods_json" | jq '[.items[] | select(.status.phase != "Succeeded")] | length')
+        if [ "$count" -eq 0 ]; then
+          echo "NO_ACTIVE_PODS"
+          exit 2
+        fi
+        bad=$(printf '%s' "$pods_json" | jq -r '
+          .items[]
+          | select(.status.phase != "Succeeded")
+          | select(
+              .status.phase != "Running"
+              or (([.status.containerStatuses[]? | select(.ready == true)] | length)
+                  != ([.spec.containers[]?] | length))
+            )
+          | [.metadata.namespace, .metadata.name, .status.phase,
+             ([.status.containerStatuses[]? | if .ready then "ready" else "not-ready" end] | join(","))]
+          | @tsv')
+        if [ -n "$bad" ]; then
+          printf '%s\n' "$bad"
+          exit 1
+        fi
+        echo "All $count non-completed pods are Running and Ready."
+      args:
+        executable: /bin/bash
+      register: verify_k8s_pod_readiness
+      changed_when: false
+      failed_when: false
+
+    - name: Wait for Argo CD to sync and report the app healthy
+      ansible.builtin.command: >-
+        k3s kubectl -n argocd get application apps
+        -o jsonpath='{.status.sync.status} {.status.health.status}'
+      register: verify_argocd_wait
+      changed_when: false
+      failed_when: false
+      retries: 12
+      delay: 10
+      until:
+        - verify_argocd_wait.rc == 0
+        - (verify_argocd_wait.stdout | trim) == 'Synced Healthy'
+
+    - name: Read Argo CD application status
+      ansible.builtin.command: k3s kubectl -n argocd get application apps -o json
+      register: verify_argocd_app
+      changed_when: false
+      failed_when: false
+
+    - name: Decode Argo CD application status safely
+      ansible.builtin.set_fact:
+        verify_argocd_sync: "{{ (verify_argocd_app.stdout | from_json).get('status', {}).get('sync', {}).get('status', '') if verify_argocd_app.rc == 0 else '' }}"
+        verify_argocd_health: "{{ (verify_argocd_app.stdout | from_json).get('status', {}).get('health', {}).get('status', '') if verify_argocd_app.rc == 0 else '' }}"
+
+    - name: Assert K3s workloads, storage and GitOps are healthy
+      ansible.builtin.assert:
+        that:
+          - verify_k8s_nodes.rc == 0
+          - "'vps1' in verify_k8s_nodes.stdout and 'vps2' in verify_k8s_nodes.stdout"
+          - "'NotReady' not in verify_k8s_nodes.stdout"
+          - verify_k8s_pods.rc == 0
+          - verify_k8s_pod_readiness.rc == 0
+          - verify_k8s_deployments.rc == 0
+          - verify_k8s_pvcs.rc == 0
+          - verify_argocd_app.rc == 0
+          - verify_argocd_sync == 'Synced'
+          - verify_argocd_health == 'Healthy'
+        fail_msg: >-
+          Kubernetes/GitOps validation failed. Nodes={{ verify_k8s_nodes.stdout | default('unavailable') }};
+          pod status errors={{ verify_k8s_pods.stdout | default('') }};
+          pod readiness errors={{ verify_k8s_pod_readiness.stdout | default('') }};
+          deployment errors={{ verify_k8s_deployments.stdout | default('') }};
+          PVC errors={{ verify_k8s_pvcs.stdout | default('') }};
+          ArgoCD rc={{ verify_argocd_app.rc | default(1) }};
+          Argo sync={{ verify_argocd_sync | default('missing') }};
+          Argo health={{ verify_argocd_health | default('missing') }}.
+        success_msg: "Both K3s nodes, pods, deployments, PVCs and the Argo CD application passed."

@@ -1,0 +1,3 @@
+---
+- name: restart teleport
+  ansible.builtin.service: { name: teleport, state: restarted }

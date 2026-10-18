@@ -1,0 +1,3 @@
+---
+firewall_public_tcp: [22, 80, 443]
+firewall_public_udp: [51820]

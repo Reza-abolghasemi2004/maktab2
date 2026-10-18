@@ -1,0 +1,61 @@
+# Managed by Ansible — host network؛ همه‌چیز فقط روی IP وایرگارد/لوکال گوش می‌دهد
+services:
+  prometheus:
+    image: {{ prometheus_image }}
+    container_name: prometheus
+    network_mode: host
+    restart: unless-stopped
+    mem_limit: 512m
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.listen-address={{ wg_ip }}:9090
+    volumes:
+      - ./prometheus:/etc/prometheus:ro
+      - /srv/prometheus:/prometheus
+
+  alertmanager:
+    image: {{ alertmanager_image }}
+    container_name: alertmanager
+    network_mode: host
+    restart: unless-stopped
+    mem_limit: 64m
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --web.listen-address={{ wg_ip }}:9093
+      - --cluster.listen-address=
+    volumes:
+      - ./alertmanager:/etc/alertmanager:ro
+      - /srv/alertmanager:/alertmanager
+
+  blackbox:
+    image: {{ blackbox_image }}
+    container_name: blackbox
+    network_mode: host
+    restart: unless-stopped
+    mem_limit: 64m
+    command:
+      - --config.file=/config/blackbox.yml
+      - --web.listen-address=127.0.0.1:9115
+    volumes:
+      - ./blackbox:/config:ro
+      - /etc/ssl/certs:/etc/ssl/certs:ro      # شامل CA خصوصی
+
+  grafana:
+    image: {{ grafana_image }}
+    container_name: grafana
+    network_mode: host
+    restart: unless-stopped
+    mem_limit: 256m
+    environment:
+      - GF_SERVER_HTTP_ADDR={{ wg_ip }}
+      - GF_SERVER_HTTP_PORT=3001
+      - GF_SERVER_ROOT_URL=https://grafana.{{ private_domain }}
+      - GF_SECURITY_ADMIN_PASSWORD={{ grafana_admin_password }}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - /srv/grafana:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro

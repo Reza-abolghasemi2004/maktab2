@@ -1,0 +1,53 @@
+---
+- ansible.builtin.apt:
+    name: [python3-kubernetes, python3-yaml, jq]
+    state: present
+  when: inventory_hostname in groups['k3s_server']
+
+- ansible.builtin.file: { path: /etc/rancher/k3s, state: directory, mode: "0755" }
+- name: k3s config
+  ansible.builtin.template:
+    src: "{{ 'config-server.yaml.j2' if inventory_hostname in groups['k3s_server'] else 'config-agent.yaml.j2' }}"
+    dest: /etc/rancher/k3s/config.yaml
+    mode: "0600"
+  notify: restart k3s
+- name: Private registry config for containerd
+  ansible.builtin.template: { src: registries.yaml.j2, dest: /etc/rancher/k3s/registries.yaml, mode: "0600" }
+  notify: restart k3s
+
+- name: Download k3s installer
+  ansible.builtin.get_url: { url: "https://get.k3s.io", dest: /usr/local/bin/k3s-install.sh, mode: "0755" }
+- name: Install k3s
+  ansible.builtin.command: "/usr/local/bin/k3s-install.sh {{ 'server' if inventory_hostname in groups['k3s_server'] else 'agent' }}"
+  environment: { INSTALL_K3S_VERSION: "{{ k3s_version }}" }
+  args: { creates: /usr/local/bin/k3s }
+
+- ansible.builtin.service:
+    name: "{{ 'k3s' if inventory_hostname in groups['k3s_server'] else 'k3s-agent' }}"
+    state: started
+    enabled: true
+- ansible.builtin.meta: flush_handlers
+
+# ───── server only ─────
+- name: Wait for node Ready
+  ansible.builtin.command: "k3s kubectl wait --for=condition=Ready node/{{ inventory_hostname }} --timeout=60s"
+  register: k3s_ready
+  retries: 10
+  delay: 10
+  until: k3s_ready.rc == 0
+  changed_when: false
+  when: inventory_hostname in groups['k3s_server']
+
+- name: Fetch kubeconfig to laptop (use through VPN)
+  when: inventory_hostname in groups['k3s_server']
+  block:
+    - ansible.builtin.slurp: { src: /etc/rancher/k3s/k3s.yaml }
+      register: kubecfg
+      no_log: true
+    - ansible.builtin.copy:
+        content: "{{ kubecfg.content | b64decode | regex_replace('https://127.0.0.1:6443', 'https://' ~ hub_ip ~ ':6443') }}"
+        dest: "{{ playbook_dir }}/.secrets/kubeconfig"
+        mode: "0600"
+      delegate_to: laptop
+      become: false
+      no_log: true

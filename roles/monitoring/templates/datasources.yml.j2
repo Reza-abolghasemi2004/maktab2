@@ -1,0 +1,18 @@
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: http://{{ wg_ip }}:9090
+    isDefault: true
+  - name: Elasticsearch (nginx)
+    type: elasticsearch
+    uid: es-nginx
+    access: proxy
+    url: http://{{ wg_ip }}:9200
+    jsonData:
+      index: "nginx-*"
+      timeField: "@timestamp"
+      esVersion: "8.0.0"
+      logMessageField: uri

@@ -1,0 +1,38 @@
+---
+- name: Install WireGuard (servers)
+  ansible.builtin.apt: { name: wireguard, state: present }
+  when: "'vps' in group_names"
+
+- ansible.builtin.file: { path: "{{ wg_key_dir }}", state: directory, mode: "0700" }
+- name: Generate key pair
+  ansible.builtin.shell: |
+    umask 077
+    wg genkey | tee {{ wg_key_dir }}/private.key | wg pubkey > {{ wg_key_dir }}/public.key
+  args: { creates: "{{ wg_key_dir }}/private.key" }
+- ansible.builtin.slurp: { src: "{{ wg_key_dir }}/private.key" }
+  register: wg_priv
+  no_log: true
+- ansible.builtin.slurp: { src: "{{ wg_key_dir }}/public.key" }
+  register: wg_pub
+- ansible.builtin.set_fact:
+    wg_private_key: "{{ wg_priv.content | b64decode | trim }}"
+    wg_public_key: "{{ wg_pub.content | b64decode | trim }}"
+  no_log: true
+
+- name: wg0.conf (routed hub-and-spoke)
+  ansible.builtin.template:
+    src: wg0.conf.j2
+    dest: "{{ '/etc/wireguard/wg0.conf' if 'vps' in group_names else wg_key_dir ~ '/maktab-vpn.conf' }}"
+    mode: "0600"
+  notify: restart wg
+  when: "'vps' in group_names or 'control' in group_names"
+
+- name: Enable wg0
+  ansible.builtin.service: { name: wg-quick@wg0, state: started, enabled: true }
+  when: "'vps' in group_names"
+- ansible.builtin.meta: flush_handlers
+
+- name: Tell the operator how to connect
+  ansible.builtin.debug:
+    msg: "VPN client config: {{ wg_key_dir }}/maktab-vpn.conf  →  sudo wg-quick up {{ wg_key_dir }}/maktab-vpn.conf"
+  when: "'control' in group_names"

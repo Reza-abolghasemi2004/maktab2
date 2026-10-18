@@ -1,0 +1,10 @@
+options {
+    directory "/var/cache/bind";
+    listen-on { 127.0.0.1; {{ hub_ip }}; };
+    listen-on-v6 { none; };
+    allow-query { localhost; {{ wg_network }}; };
+    recursion yes;
+    allow-recursion { localhost; {{ wg_network }}; };
+    forwarders { {% for f in dns_forwarders %}{{ f }}; {% endfor %}};
+    dnssec-validation auto;
+};

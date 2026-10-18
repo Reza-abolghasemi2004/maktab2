@@ -1,0 +1,27 @@
+# Managed by Ansible
+[Interface]
+Address = {{ wg_ip }}/{{ 24 if 'vps' in group_names else 32 }}
+PrivateKey = {{ wg_private_key }}
+{% if inventory_hostname == wg_hub %}
+ListenPort = {{ wg_port }}
+{% endif %}
+# Split-DNS: فقط *.{{ private_domain }} از DNS خصوصی
+PostUp = resolvectl dns %i {{ hub_ip }} || true; resolvectl domain %i ~{{ private_domain }} || true
+PostDown = resolvectl revert %i || true
+
+{% if inventory_hostname == wg_hub %}
+{% for p in wg_spokes %}
+[Peer]
+# {{ p }}
+PublicKey = {{ hostvars[p].wg_public_key }}
+AllowedIPs = {{ hostvars[p].wg_ip }}/32
+
+{% endfor %}
+{% else %}
+[Peer]
+# hub ({{ wg_hub }})
+PublicKey = {{ hostvars[wg_hub].wg_public_key }}
+Endpoint = {{ hostvars[wg_hub].ansible_host }}:{{ wg_port }}
+AllowedIPs = {{ wg_network }}
+PersistentKeepalive = 25
+{% endif %}

@@ -1,0 +1,10 @@
+---
+- name: "Task 1 - Prepare VMs (default apps, viewer user, Docker)"
+  hosts: vps
+  roles: [common, docker]
+  any_errors_fatal: true
+
+- name: "Task 1 - Install & configure Ansible on management server"
+  hosts: edge
+  roles: [ansible_control]
+  any_errors_fatal: true

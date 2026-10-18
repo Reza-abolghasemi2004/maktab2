@@ -1,0 +1,61 @@
+---
+default_legend: !unsafe "{{instance}}"
+vm_panels:
+  - title: CPU usage
+    unit: percentunit
+    expr: 'avg by(instance)(1 - rate(node_cpu_seconds_total{mode="idle",instance=~"$instance"}[5m]))'
+  - title: RAM usage
+    unit: percentunit
+    expr: '1 - node_memory_MemAvailable_bytes{instance=~"$instance"} / node_memory_MemTotal_bytes{instance=~"$instance"}'
+  - title: Swap used
+    unit: percentunit
+    expr: '1 - node_memory_SwapFree_bytes{instance=~"$instance"} / node_memory_SwapTotal_bytes{instance=~"$instance"}'
+  - title: Storage used (by mountpoint)
+    unit: percentunit
+    legend: !unsafe "{{instance}} {{mountpoint}}"
+    expr: '1 - node_filesystem_avail_bytes{instance=~"$instance",fstype=~"ext4|xfs"} / node_filesystem_size_bytes{instance=~"$instance",fstype=~"ext4|xfs"}'
+  - title: Disk IOPS (read+write)
+    unit: iops
+    legend: !unsafe "{{instance}} {{device}}"
+    expr: 'rate(node_disk_reads_completed_total{instance=~"$instance",device!~"loop.*|dm-.*"}[5m]) + rate(node_disk_writes_completed_total{instance=~"$instance",device!~"loop.*|dm-.*"}[5m])'
+  - title: Disk throughput
+    unit: Bps
+    legend: !unsafe "{{instance}} {{device}}"
+    expr: 'rate(node_disk_read_bytes_total{instance=~"$instance",device!~"loop.*|dm-.*"}[5m]) + rate(node_disk_written_bytes_total{instance=~"$instance",device!~"loop.*|dm-.*"}[5m])'
+  - title: Network receive
+    unit: Bps
+    legend: !unsafe "{{instance}} {{device}}"
+    expr: 'rate(node_network_receive_bytes_total{instance=~"$instance",device!~"lo|veth.*|docker.*|br-.*|cni.*|flannel.*"}[5m])'
+  - title: Network transmit
+    unit: Bps
+    legend: !unsafe "{{instance}} {{device}}"
+    expr: 'rate(node_network_transmit_bytes_total{instance=~"$instance",device!~"lo|veth.*|docker.*|br-.*|cni.*|flannel.*"}[5m])'
+
+platform_panels:
+  - title: Probe success (1 = up)
+    legend: !unsafe "{{instance}}"
+    expr: 'probe_success'
+  - title: HTTP status code
+    legend: !unsafe "{{instance}}"
+    expr: 'probe_http_status_code'
+  - title: TLS certificate days left
+    unit: d
+    legend: !unsafe "{{instance}}"
+    expr: '(probe_ssl_earliest_cert_expiry - time()) / 86400'
+  - title: Not-ready pods
+    legend: !unsafe "{{namespace}}/{{pod}}"
+    expr: 'sum by(namespace,pod)(kube_pod_status_phase{phase=~"Pending|Failed|Unknown"})'
+  - title: Node Ready (k8s)
+    legend: !unsafe "{{node}}"
+    expr: 'kube_node_status_condition{condition="Ready",status="true"}'
+  - title: Elasticsearch cluster status (green=1)
+    legend: !unsafe "{{color}}"
+    expr: 'elasticsearch_cluster_health_status == 1'
+  - title: Backup age (hours)
+    unit: h
+    legend: !unsafe "{{job_name}}"
+    expr: '(time() - maktab_backup_last_success_timestamp_seconds) / 3600'
+  - title: Backup size
+    unit: bytes
+    legend: !unsafe "{{job_name}}"
+    expr: 'maktab_backup_size_bytes'

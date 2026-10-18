@@ -1,0 +1,101 @@
+---
+- ansible.builtin.file: { path: "{{ item.path }}", state: directory, owner: "{{ item.owner | default('root') }}", mode: "0755" }
+  loop:
+    - { path: /opt/devtools }
+    - { path: /srv/gitea }
+    - { path: /srv/registry/data }
+    - { path: /srv/registry/auth }
+    - { path: /srv/act_runner }
+
+- name: Registry basic-auth (htpasswd bcrypt)
+  ansible.builtin.shell: "htpasswd -Bbn {{ registry_user }} '{{ registry_password }}' > /srv/registry/auth/htpasswd"
+  args: { creates: /srv/registry/auth/htpasswd }
+  no_log: true
+
+- ansible.builtin.template: { src: docker-compose.yml.j2, dest: /opt/devtools/docker-compose.yml, mode: "0644" }
+- ansible.builtin.template: { src: runner-config.yaml.j2, dest: /opt/devtools/runner-config.yaml, mode: "0644" }
+- name: Placeholder .env (runner token is filled later)
+  ansible.builtin.copy: { content: "RUNNER_TOKEN=\n", dest: /opt/devtools/.env, mode: "0600", force: false }
+
+- name: Start Gitea + Registry
+  community.docker.docker_compose_v2:
+    project_src: /opt/devtools
+    services: [gitea, registry]
+    state: present
+
+- name: Wait for Gitea API
+  ansible.builtin.uri: { url: "http://{{ hub_ip }}:3000/api/healthz", status_code: 200 }
+  register: gitea_health
+  retries: 30
+  delay: 5
+  until: gitea_health.status == 200
+
+- name: Existing Gitea users
+  ansible.builtin.command: docker exec -u git gitea gitea admin user list
+  register: gitea_users
+  changed_when: false
+- name: Create Gitea admin
+  ansible.builtin.command: >
+    docker exec -u git gitea gitea admin user create --admin
+    --username {{ gitea_admin_user }} --password {{ gitea_admin_password }}
+    --email {{ gitea_admin_email }} --must-change-password=false
+  when: gitea_admin_user not in gitea_users.stdout
+  no_log: true
+
+- name: Create organisation
+  ansible.builtin.uri:
+    url: "http://{{ hub_ip }}:3000/api/v1/orgs"
+    method: POST
+    user: "{{ gitea_admin_user }}"
+    password: "{{ gitea_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body: { username: "{{ gitea_org }}", visibility: private }
+    status_code: [201, 422]
+  no_log: true
+- name: Create repositories (backend, frontend, gitops)
+  ansible.builtin.uri:
+    url: "http://{{ hub_ip }}:3000/api/v1/orgs/{{ gitea_org }}/repos"
+    method: POST
+    user: "{{ gitea_admin_user }}"
+    password: "{{ gitea_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body: { name: "{{ item }}", private: true, default_branch: main }
+    status_code: [201, 409]
+  loop: [backend, frontend, gitops]
+  no_log: true
+- name: Org-level Actions secrets for CI pipelines
+  ansible.builtin.uri:
+    url: "http://{{ hub_ip }}:3000/api/v1/orgs/{{ gitea_org }}/actions/secrets/{{ item.key }}"
+    method: PUT
+    user: "{{ gitea_admin_user }}"
+    password: "{{ gitea_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body: { data: "{{ item.value }}" }
+    status_code: [201, 204]
+  loop:
+    - { key: CI_USER,       value: "{{ gitea_admin_user }}" }
+    - { key: CI_PASSWORD,   value: "{{ gitea_admin_password }}" }
+    - { key: REGISTRY_USER, value: "{{ registry_user }}" }
+    - { key: REGISTRY_PASSWORD, value: "{{ registry_password }}" }
+  no_log: true
+
+- name: Runner already registered?
+  ansible.builtin.stat: { path: /srv/act_runner/.runner }
+  register: runner_reg
+- name: Generate runner registration token
+  ansible.builtin.command: docker exec -u git gitea gitea actions generate-runner-token
+  register: runner_token
+  when: not runner_reg.stat.exists
+  changed_when: false
+- ansible.builtin.copy:
+    content: "RUNNER_TOKEN={{ runner_token.stdout | trim }}\n"
+    dest: /opt/devtools/.env
+    mode: "0600"
+  when: not runner_reg.stat.exists
+  no_log: true
+
+- name: Start everything (incl. CI runner)
+  community.docker.docker_compose_v2: { project_src: /opt/devtools, state: present }

@@ -1,0 +1,71 @@
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+rule_files:
+  - /etc/prometheus/rules/*.yml
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["{{ wg_ip }}:9093"]
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs: [{ targets: ["{{ wg_ip }}:9090"] }]
+  - job_name: alertmanager
+    static_configs: [{ targets: ["{{ wg_ip }}:9093"] }]
+
+  # VM resources: RAM, CPU, IOPS, network, storage (+ backup textfile metrics)
+  - job_name: node
+    static_configs:
+{% for h in groups['vps'] %}
+      - targets: ["{{ hostvars[h].wg_ip }}:9100"]
+        labels: { host: {{ h }} }
+{% endfor %}
+
+  # Kubernetes: cluster status + critical resources
+  - job_name: kube-state-metrics
+    static_configs: [{ targets: ["{{ hub_ip }}:{{ np_ksm }}"] }]
+
+  - job_name: elasticsearch
+    static_configs: [{ targets: ["{{ wg_ip }}:9114"] }]
+
+  # Domains: status code + certificate expiry
+  - job_name: blackbox_http
+    metrics_path: /probe
+    params: { module: [http_2xx] }
+    static_configs:
+      - targets:
+{% for t in probe_http_targets %}
+          - {{ t }}
+{% endfor %}
+    relabel_configs:
+      - { source_labels: [__address__], target_label: __param_target }
+      - { source_labels: [__param_target], target_label: instance }
+      - { target_label: __address__, replacement: "127.0.0.1:9115" }
+
+  - job_name: blackbox_tcp_host
+    metrics_path: /probe
+    params: { module: [tcp_connect] }
+    static_configs:
+      - targets:
+{% for t in probe_tcp_host_targets %}
+          - {{ t }}
+{% endfor %}
+    relabel_configs:
+      - { source_labels: [__address__], target_label: __param_target }
+      - { source_labels: [__param_target], target_label: instance }
+      - { target_label: __address__, replacement: "127.0.0.1:9115" }
+
+  # Uptime of PostgreSQL / Redis / MariaDB (probe از داخل کلاستر)
+  - job_name: blackbox_tcp_k8s
+    metrics_path: /probe
+    params: { module: [tcp_connect] }
+    static_configs:
+      - targets:
+{% for t in probe_tcp_k8s_targets %}
+          - {{ t }}
+{% endfor %}
+    relabel_configs:
+      - { source_labels: [__address__], target_label: __param_target }
+      - { source_labels: [__param_target], target_label: instance }
+      - { target_label: __address__, replacement: "{{ hub_ip }}:{{ np_blackbox_k8s }}" }

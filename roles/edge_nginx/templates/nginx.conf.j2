@@ -1,0 +1,32 @@
+user www-data;
+worker_processes auto;
+pid /run/nginx.pid;
+error_log /var/log/nginx/error.log warn;
+include /etc/nginx/modules-enabled/*.conf;
+
+events { worker_connections 1024; }
+
+http {
+    sendfile on;
+    tcp_nopush on;
+    keepalive_timeout 65;
+    server_tokens off;
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    # JSON log → Filebeat → Logstash → Elasticsearch → Grafana
+    log_format json_combined escape=json
+      '{"time":"$time_iso8601","remote_addr":"$remote_addr","vhost":"$host",'
+      '"method":"$request_method","uri":"$uri","status":$status,"bytes":$body_bytes_sent,'
+      '"request_time":$request_time,"upstream_response_time":"$upstream_response_time",'
+      '"cache_status":"$upstream_cache_status","referer":"$http_referer","user_agent":"$http_user_agent"}';
+    access_log /var/log/nginx/access.log json_combined;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript image/svg+xml;
+
+    include /etc/nginx/conf.d/*.conf;
+    include /etc/nginx/sites-enabled/*;
+}

@@ -1,0 +1,6 @@
+---
+- name: Install K3s Server on VPS1
+  hosts: k3s_server
+  any_errors_fatal: true
+  roles:
+    - k3s

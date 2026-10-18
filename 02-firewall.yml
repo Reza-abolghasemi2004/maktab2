@@ -1,0 +1,5 @@
+---
+- name: "Task 2 - Firewall (ufw + Docker/K8s aware)"
+  hosts: vps
+  roles: [firewall]
+  any_errors_fatal: true

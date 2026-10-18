@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Maktab Demo</title></head>
+<body style="font-family:sans-serif;max-width:640px;margin:3rem auto">
+  <h1>Maktab Sharif DevOps Demo</h1>
+  <pre id="out">loading…</pre>
+  <script>
+    fetch('/api/ping').then(r => r.json()).then(j => out.textContent = JSON.stringify(j, null, 2))
+      .catch(e => out.textContent = 'backend error: ' + e);
+  </script>
+</body></html>

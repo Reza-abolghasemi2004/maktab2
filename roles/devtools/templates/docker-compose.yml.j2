@@ -1,0 +1,56 @@
+# Managed by Ansible
+services:
+  gitea:
+    image: {{ gitea_image }}
+    container_name: gitea
+    restart: unless-stopped
+    mem_limit: 512m
+    environment:
+      - USER_UID=1000
+      - USER_GID=1000
+      - GITEA__server__DOMAIN=gitea.{{ private_domain }}
+      - GITEA__server__ROOT_URL=https://gitea.{{ private_domain }}/
+      - GITEA__server__HTTP_PORT=3000
+      - GITEA__server__DISABLE_SSH=true
+      - GITEA__database__DB_TYPE=sqlite3
+      - GITEA__security__INSTALL_LOCK=true
+      - GITEA__service__DISABLE_REGISTRATION=true
+      - GITEA__actions__ENABLED=true
+      - GITEA__repository__DEFAULT_BRANCH=main
+    volumes:
+      - /srv/gitea:/data
+    ports:
+      - "{{ hub_ip }}:3000:3000"
+
+  registry:
+    image: {{ registry_image }}
+    container_name: registry
+    restart: unless-stopped
+    mem_limit: 128m
+    environment:
+      - REGISTRY_AUTH=htpasswd
+      - REGISTRY_AUTH_HTPASSWD_REALM=Maktab Registry
+      - REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd
+      - REGISTRY_STORAGE_DELETE_ENABLED=true
+    volumes:
+      - /srv/registry/data:/var/lib/registry
+      - /srv/registry/auth:/auth:ro
+    ports:
+      - "{{ hub_ip }}:5000:5000"
+
+  runner:
+    image: {{ runner_image }}
+    container_name: act_runner
+    restart: unless-stopped
+    depends_on: [gitea]
+    mem_limit: 1g
+    environment:
+      CONFIG_FILE: /config.yaml
+      GITEA_INSTANCE_URL: http://{{ hub_ip }}:3000
+      GITEA_RUNNER_REGISTRATION_TOKEN: ${RUNNER_TOKEN}
+      GITEA_RUNNER_NAME: vps1-runner
+      GITEA_RUNNER_LABELS: "ubuntu-latest:docker://catthehacker/ubuntu:act-22.04"
+    volumes:
+      - /srv/act_runner:/data
+      - /opt/devtools/runner-config.yaml:/config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
