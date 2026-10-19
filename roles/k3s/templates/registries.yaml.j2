@@ -2,8 +2,15 @@ mirrors:
   "{{ registry_endpoint }}":
     endpoint:
       - "http://{{ registry_endpoint }}"
+  "docker.io":
+    endpoint:
+      - "https://hub.hamdocker.ir"
+  "registry.k8s.io":
+    endpoint:
+      - "https://k8s-mirror.liara.ir"
 configs:
   "{{ registry_endpoint }}":
     auth:
       username: {{ registry_user }}
       password: {{ registry_password }}
+

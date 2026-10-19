@@ -19,8 +19,11 @@
   ansible.builtin.get_url: { url: "https://get.k3s.io", dest: /usr/local/bin/k3s-install.sh, mode: "0755" }
 - name: Install k3s
   ansible.builtin.command: "/usr/local/bin/k3s-install.sh {{ 'server' if inventory_hostname in groups['k3s_server'] else 'agent' }}"
-  environment: { INSTALL_K3S_VERSION: "{{ k3s_version }}" }
-  args: { creates: /usr/local/bin/k3s }
+  environment:
+    INSTALL_K3S_VERSION: "{{ k3s_version }}"
+    K3S_URL: "https://{{ hub_ip }}:6443"
+    K3S_TOKEN: "{{ k3s_token }}"
+  args: { creates: "/etc/systemd/system/{{ 'k3s' if inventory_hostname in groups['k3s_server'] else 'k3s-agent' }}.service" }
 
 - ansible.builtin.service:
     name: "{{ 'k3s' if inventory_hostname in groups['k3s_server'] else 'k3s-agent' }}"

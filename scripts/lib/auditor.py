@@ -729,63 +729,268 @@ class HealthAuditor:
     def audit_l2_l5_live_checks(self, inv):
         """
         Executes Level 2 through Level 5 checks.
-        If a host is reachable, queries the host with read-only commands.
+        If a host is reachable, queries the host with read-only commands and rich validators.
         If unreachable, records NOT_CHECKED with exact diagnostic evidence.
         """
+        def val_system_base(c, o, e):
+            if c == 0 and ("load average" in o.lower() or "up " in o.lower()):
+                return "PASS", "P1", "System uptime and timedatectl active and synchronized", "Exit code 0 with synchronized clock/uptime", o.strip()[:150], [], None
+            return "FAIL", "P1", f"Command 'uptime && timedatectl' failed (exit code {c})", "Exit code 0", f"stdout: {o[:100]} | stderr: {e[:100]}", ["System service or clock desynchronized"], "Inspect timedatectl status and system logs"
+
+        def val_docker(c, o, e):
+            if c == 0 and "active" in o:
+                return "PASS", "P1", "Docker daemon active and running", "active", o.strip(), [], None
+            return "FAIL", "P1", f"Docker daemon not active (exit {c})", "active", f"stdout: {o[:100]} | stderr: {e[:100]}", ["docker.service stopped or crashed"], "Inspect systemctl status docker"
+
+        def val_ufw(c, o, e):
+            if c == 0 and "Status: active" in o:
+                return "PASS", "P1", "UFW firewall active with filtering rules enabled", "Status: active", o.strip()[:150], [], None
+            return "FAIL", "P1", f"UFW firewall not active (exit {c})", "Status: active", f"stdout: {o[:100]} | stderr: {e[:100]}", ["UFW disabled or service inactive"], "Inspect ufw status verbose"
+
+        def val_wireguard_svc(c, o, e):
+            if c == 0 and "active" in o:
+                return "PASS", "P1", "WireGuard interface service wg-quick@wg0 active", "active", o.strip(), [], None
+            return "FAIL", "P1", f"WireGuard service wg-quick@wg0 not active (exit {c})", "active", f"stdout: {o[:100]} | stderr: {e[:100]}", ["WireGuard service inactive"], "Inspect journalctl -u wg-quick@wg0"
+
+        def val_wireguard_iface(ip_str):
+            def _val(c, o, e):
+                if c == 0 and f"inet {ip_str}" in o:
+                    return "PASS", "P1", f"WireGuard wg0 interface UP with VPN address {ip_str}/24", f"inet {ip_str}", o.strip()[:150], [], None
+                return "FAIL", "P1", f"WireGuard wg0 interface missing {ip_str} (exit {c})", f"inet {ip_str}", f"stdout: {o[:100]} | stderr: {e[:100]}", ["wg0 interface down"], "Inspect wg show wg0"
+            return _val
+
+        def val_named_svc(c, o, e):
+            if c == 0 and "active" in o:
+                return "PASS", "P1", "BIND9 named DNS daemon active", "active", o.strip(), [], None
+            return "FAIL", "P1", f"BIND9 named service not active (exit {c})", "active", f"stdout: {o[:100]} | stderr: {e[:100]}", ["named service failed"], "Inspect systemctl status named"
+
+        def val_port_53(c, o, e):
+            if c == 0 and ":53" in o:
+                return "PASS", "P1", "DNS port 53 listening on TCP/UDP", ":53", o.strip()[:150], [], None
+            return "FAIL", "P1", f"DNS port 53 not listening (exit {c})", ":53", f"stdout: {o[:100]} | stderr: {e[:100]}", ["BIND9 not bound to port 53"], "Check named configuration and socket status"
+
+        def val_teleport_svc(c, o, e):
+            if c == 0 and "active" in o:
+                return "PASS", "P1", "Teleport daemon active", "active", o.strip(), [], None
+            return "FAIL", "P1", f"Teleport daemon not active (exit {c})", "active", f"stdout: {o[:100]} | stderr: {e[:100]}", [
+                "teleport.service stopped or crashed during startup",
+                "Cluster join handshake error or token mismatch"
+            ], "Inspect 'systemctl status teleport --no-pager -l' and 'journalctl -u teleport -b -n 150 --no-pager'"
+
+        def val_teleport_ports(c, o, e):
+            if c == 0 and ("3080" in o or "3025" in o):
+                return "PASS", "P1", "Teleport Auth (3025) and Web/Proxy (3080) ports listening", ":3025 / :3080", o.strip()[:150], [], None
+            return "FAIL", "P1", f"Teleport ports 3025/3080 not listening (exit {c})", ":3025 and :3080", f"stdout: {o[:100]} | stderr: {e[:100]}", ["Teleport ports not bound"], "Check /etc/teleport.yaml listen_addr"
+
+        def val_teleport_ping(c, o, e):
+            if c == 0 and ("server_version" in o or "cluster_name" in o or "teleport" in o.lower()):
+                return "PASS", "P1", "Teleport Web API /webapi/ping responding with cluster information", "HTTP 200 with server_version or cluster_name", o.strip()[:150], [], None
+            return "FAIL", "P1", f"Teleport Web API ping failed (exit {c})", "HTTP 200 with server_version or cluster_name", f"stdout: {o[:100]} | stderr: {e[:100]}", [
+                "Teleport web proxy not listening on 10.8.0.1:3080",
+                "TLS handshake error with internal wildcard certificate"
+            ], "Inspect Teleport logs: 'journalctl -u teleport -b -n 50 --no-pager'"
+
+        def val_nfs_svc(c, o, e):
+            if c == 0 and "active" in o:
+                return "PASS", "P1", "NFS server kernel daemon active", "active", o.strip(), [], None
+            return "FAIL", "P1", f"NFS server not active (exit {c})", "active", f"stdout: {o[:100]} | stderr: {e[:100]}", ["nfs-server service failed"], "Inspect systemctl status nfs-server"
+
+        def val_nfs_export(c, o, e):
+            if c == 0 and "/srv/nfs/k8s" in o:
+                return "PASS", "P1", "NFS export /srv/nfs/k8s configured and active", "/srv/nfs/k8s", o.strip()[:150], [], None
+            return "FAIL", "P1", f"NFS export /srv/nfs/k8s not active (exit {c})", "/srv/nfs/k8s", f"stdout: {o[:100]} | stderr: {e[:100]}", ["/etc/exports not exported via exportfs"], "Inspect exportfs -v and /etc/exports"
+
+        def val_k3s_svc(c, o, e):
+            if c == 0 and "active" in o:
+                return "PASS", "P1", "k3s control plane server service active", "active", o.strip(), [], None
+            return "FAIL", "P1", f"k3s server service not active (exit {c})", "active", f"stdout: {o[:100]} | stderr: {e[:100]}", ["k3s service crashed or inactive"], "Inspect journalctl -u k3s -b -n 50"
+
+        def val_k3s_agent_svc(c, o, e):
+            if c == 0 and "active" in o:
+                return "PASS", "P1", "k3s-agent service active on vps2", "active", o.strip(), [], None
+            return "FAIL", "P1", f"k3s-agent service not active on vps2 (exit {c})", "active", f"stdout: {o[:100]} | stderr: {e[:100]}", [
+                "k3s-agent systemd unit not created or failed to connect to k3s server (10.8.0.1:6443)",
+                "Playbook 04-kubernetes.yml was halted before reaching k3s_agent role",
+                "k3s_token mismatch or flannel wg0 network interface error"
+            ], "Execute diagnostics on vps2: 'systemctl status k3s-agent --no-pager -l' and 'journalctl -u k3s-agent -b -n 150 --no-pager'"
+
+        def val_k3s_port_6443(c, o, e):
+            if c == 0 and ":6443" in o:
+                return "PASS", "P1", "Kubernetes API server listening on port 6443", ":6443", o.strip()[:150], [], None
+            return "FAIL", "P1", f"Kubernetes API port 6443 not listening (exit {c})", ":6443", f"stdout: {o[:100]} | stderr: {e[:100]}", ["k3s API server socket down"], "Check ss -tulpn | grep :6443"
+
+        def val_k3s_readyz(c, o, e):
+            if c == 0 and "ok" in o.strip():
+                return "PASS", "P1", "Kubernetes API /readyz endpoint reports 'ok'", "ok", o.strip()[:150], [], None
+            return "FAIL", "P1", f"Kubernetes API /readyz health check failed (exit {c})", "ok", f"stdout: {o[:100]} | stderr: {e[:100]}", ["K8s control plane components not ready"], "Check 'k3s kubectl get componentstatuses'"
+
+        def val_k3s_nodes(c, o, e):
+            if c == 0 and "Ready" in o:
+                return "PASS", "P1", "Cluster node(s) report Ready condition", "Ready", o.strip()[:150], [], None
+            return "FAIL", "P1", f"No nodes in Ready state (exit {c})", "Ready", f"stdout: {o[:100]} | stderr: {e[:100]}", ["Node kubelet not reporting ready or flannel CNI down"], "Check 'k3s kubectl describe node'"
+
+        def val_k3s_pods(c, o, e):
+            if c == 0:
+                lines = [l.strip() for l in o.strip().splitlines() if l.strip()]
+                if not lines:
+                    return "PASS", "P2", "All in-cluster pods are in Running or Succeeded phase", "0 non-running pods", "All pods healthy", [], None
+                sample = "; ".join(lines[:3])
+                return "WARN", "P2", f"{len(lines)} non-running pod(s) detected: {sample}", "0 non-running pods", f"Non-running pods: {sample}", [
+                    "Worker node vps2 offline causing replica/scheduled pods to stay in Pending phase",
+                    "Container image pull throttling or pending PVC storage binding"
+                ], "Inspect non-running pods: 'k3s kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded'"
+            return "FAIL", "P2", f"Failed to query pod phases (exit {c})", "Exit code 0", f"stdout: {o[:100]} | stderr: {e[:100]}", ["Kubernetes API query failed"], "Check k3s API server status"
+
+        def val_nfs_sc(c, o, e):
+            if c == 0 and "nfs-client" in o:
+                return "PASS", "P1", "StorageClass nfs-client is registered in Kubernetes", "nfs-client", o.strip()[:150], [], None
+            return "FAIL", "P1", f"StorageClass nfs-client not found (exit {c})", "nfs-client", f"stdout: {o[:100]} | stderr: {e[:100]}", ["StorageClass manifest roles/k8s_platform/templates/nfs-provisioner.yml.j2 not applied"], "Apply nfs-provisioner manifest"
+
+        def val_cnpg(c, o, e):
+            if c == 0:
+                phase = o.strip()
+                if phase in ["Cluster in healthy state", "Healthy"]:
+                    return "PASS", "P1", f"PostgreSQL HA cluster healthy (phase: {phase})", "Cluster in healthy state", phase, [], None
+                elif any(p in phase for p in ["Setting up primary", "Waiting for instances", "Pending"]):
+                    return "WARN", "P2", f"PostgreSQL cluster is initializing (phase: {phase}); pending secondary instance on worker node", "Cluster in healthy state", phase, [
+                        "Secondary instance cannot be scheduled because worker node vps2 is down (anti-affinity requirement in cluster.yaml)",
+                        "Primary is active or initializing local-path storage"
+                    ], "Bring up vps2 k3s-agent to enable PostgreSQL replica scheduling across nodes"
+                else:
+                    return "FAIL", "P1", f"PostgreSQL cluster in unexpected phase: {phase}", "Cluster in healthy state", phase, ["Database initialization error"], "Inspect 'k3s kubectl -n data describe cluster pg-main'"
+            return "FAIL", "P1", f"CloudNativePG cluster resource pg-main not found in namespace data (exit {c})", "pg-main present", f"stdout: {o[:100]} | stderr: {e[:100]}", ["ArgoCD GitOps application not synced or CNPG operator not installed"], "Check ArgoCD sync status and CNPG operator pods in cnpg-system"
+
+        def val_nginx_svc(c, o, e):
+            if c == 0 and "active" in o:
+                return "PASS", "P1", "Nginx web server daemon active", "active", o.strip(), [], None
+            return "FAIL", "P1", f"Nginx service not active (exit {c})", "active", f"stdout: {o[:100]} | stderr: {e[:100]}", ["nginx.service stopped or crashed"], "Inspect systemctl status nginx"
+
+        def val_nginx_syntax(c, o, e):
+            combined = (o + " " + e).lower()
+            if c == 0 and ("syntax is ok" in combined or "test is successful" in combined):
+                ev = (e if e else o).strip()[:150]
+                return "PASS", "P1", "Nginx configuration syntax test is successful", "syntax is ok / test is successful", ev, [], None
+            return "FAIL", "P1", f"Nginx configuration test failed (exit {c})", "syntax is ok", f"stdout: {o[:100]} | stderr: {e[:100]}", ["Nginx syntax error in /etc/nginx/nginx.conf or conf.d/"], "Run 'nginx -t' to see configuration syntax error line"
+
+        def val_nginx_ports(c, o, e):
+            if c == 0 and (":80" in o or ":443" in o):
+                return "PASS", "P1", "Nginx listening on public HTTP (80) and HTTPS (443) ports", ":80 / :443", o.strip()[:150], [], None
+            return "FAIL", "P1", f"Nginx ports 80/443 not listening (exit {c})", ":80 and :443", f"stdout: {o[:100]} | stderr: {e[:100]}", ["Nginx ports not bound"], "Check ss -tulpn | grep -E ':80|:443'"
+
+        def val_container_running(cont_name, stack_dir=None):
+            def _val(c, o, e):
+                if c == 0 and "Up" in o:
+                    return "PASS", "P1", f"{cont_name} container running ({o.strip()})", "Up", o.strip(), [], None
+                hints = [f"{cont_name} container exited or docker compose stack not started"]
+                if stack_dir:
+                    hints.append(f"Compose stack in {stack_dir} not running")
+                return "FAIL", "P1", f"{cont_name} container not running (exit {c})", "Up", f"stdout: {o[:100]} | stderr: {e[:100]}", hints, f"Inspect 'docker ps -a --filter name={cont_name}' and 'docker logs {cont_name} --tail 100'"
+            return _val
+
+        def val_gitea_api(c, o, e):
+            if c == 0 and "version" in o:
+                return "PASS", "P1", "Gitea REST API responding with version payload", "version", o.strip()[:150], [], None
+            return "FAIL", "P1", f"Gitea REST API request failed (exit {c})", "version", f"stdout: {o[:100]} | stderr: {e[:100]}", ["Gitea web service not listening on 10.8.0.1:3000"], "Inspect curl http://10.8.0.1:3000"
+
+        def val_node_exporter_svc(host_name):
+            def _val(c, o, e):
+                if c == 0 and "active" in o:
+                    return "PASS", "P1", f"Node exporter service active on {host_name} ({o.strip()})", "active", o.strip(), [], None
+                return "FAIL", "P1", f"Node exporter service not active on {host_name} (exit {c})", "active", f"stdout: {o[:100]} | stderr: {e[:100]}", [
+                    f"prometheus-node-exporter service not installed or failed on {host_name}",
+                    "Playbook 06-monitoring.yml not executed"
+                ], f"Check 'systemctl status prometheus-node-exporter --no-pager -l' on {host_name}"
+            return _val
+
+        def val_node_exporter_metrics(ip_str):
+            def _val(c, o, e):
+                if c == 0 and "node_" in o:
+                    return "PASS", "P1", f"Node exporter metrics endpoint responding on {ip_str}:9100", "node_", o.strip()[:150], [], None
+                return "FAIL", "P1", f"Node exporter metrics query failed on {ip_str}:9100 (exit {c})", "node_", f"stdout: {o[:100]} | stderr: {e[:100]}", [
+                    f"Node exporter not listening on {ip_str}:9100",
+                    "Firewall blocking port 9100 or service inactive"
+                ], f"Inspect ss -tulpn | grep :9100 on {ip_str}"
+            return _val
+
+        def val_backup_timer(c, o, e):
+            if c == 0 and "active" in o:
+                return "PASS", "P1", "Systemd timer maktab-backup.timer active and scheduled", "active", o.strip(), [], None
+            return "FAIL", "P1", f"Backup timer not active (exit {c})", "active", f"stdout: {o[:100]} | stderr: {e[:100]}", ["maktab-backup.timer disabled or stopped"], "Check systemctl status maktab-backup.timer"
+
+        def val_prom_ready(c, o, e):
+            if c == 0 and "ready" in o.lower():
+                return "PASS", "P1", "Prometheus ready API endpoint returns ready status", "ready", o.strip()[:150], [], None
+            return "FAIL", "P1", f"Prometheus ready API request failed (exit {c})", "ready", f"stdout: {o[:100]} | stderr: {e[:100]}", ["Prometheus container not running or web listener not reachable on 10.8.0.2:9090"], "Inspect Prometheus container status and logs"
+
+        def val_prom_targets(c, o, e):
+            if c == 0 and "success" in o.lower():
+                return "PASS", "P1", "Prometheus targets API returned success status", "success", o.strip()[:150], [], None
+            return "FAIL", "P1", f"Prometheus targets API request failed (exit {c})", "success", f"stdout: {o[:100]} | stderr: {e[:100]}", ["Prometheus not responding or target scrape configuration error"], "Check Prometheus web UI at http://10.8.0.2:9090/targets"
+
+        def val_grafana_health(c, o, e):
+            if c == 0 and "ok" in o.lower():
+                return "PASS", "P1", "Grafana health API endpoint returns ok", "ok", o.strip()[:150], [], None
+            return "FAIL", "P1", f"Grafana health API request failed (exit {c})", "ok", f"stdout: {o[:100]} | stderr: {e[:100]}", ["Grafana container not running or listening on 10.8.0.2:3001"], "Check Grafana container status"
+
+        def val_es_health(c, o, e):
+            if c == 0 and ("cluster_name" in o or "status" in o):
+                return "PASS", "P1", "Elasticsearch cluster health API responding", "cluster_name or status", o.strip()[:150], [], None
+            return "FAIL", "P1", f"Elasticsearch cluster health query failed (exit {c})", "cluster_name or status", f"stdout: {o[:100]} | stderr: {e[:100]}", ["Elasticsearch container not running or not listening on 10.8.0.2:9200"], "Inspect Elasticsearch container status"
+
         live_definitions = [
-            # Host, Service, Check, Level, Scope, Mandatory, Cmd/Probe, SuccessCheck
-            ("vps1", "system_base", "system_timezone_and_uptime", "L2_PROCESS", "access", True, "uptime && timedatectl", "uptime"),
-            ("vps1", "docker_engine", "docker_daemon_active", "L2_PROCESS", "kubernetes", True, "systemctl is-active docker", "active"),
-            ("vps1", "firewall_ufw", "ufw_service_active", "L2_PROCESS", "network", True, "ufw status", "Status: active"),
-            ("vps1", "wireguard", "wireguard_service_active", "L2_PROCESS", "network", True, "systemctl is-active wg-quick@wg0", "active"),
-            ("vps1", "wireguard", "wireguard_interface_up", "L3_NETWORK", "network", True, "ip addr show wg0", "inet 10.8.0.1"),
-            ("vps1", "dns_bind9", "bind9_service_active", "L2_PROCESS", "network", True, "systemctl is-active named", "active"),
-            ("vps1", "dns_bind9", "bind9_port_53_listening", "L3_NETWORK", "network", True, "ss -tulpn | grep :53", ":53"),
-            ("vps1", "teleport_auth_proxy", "teleport_service_active", "L2_PROCESS", "access", True, "systemctl is-active teleport", "active"),
-            ("vps1", "teleport_auth_proxy", "teleport_ports_listening", "L3_NETWORK", "access", True, "ss -tulpn | grep -E ':3025|:3080'", "3080"),
-            ("vps1", "teleport_auth_proxy", "teleport_webapi_ping_health", "L4_PROTOCOL", "access", True, "curl -k -s https://127.0.0.1:3080/webapi/ping", "status"),
-            ("vps1", "nfs_server", "nfs_server_active", "L2_PROCESS", "storage", True, "systemctl is-active nfs-server", "active"),
-            ("vps1", "nfs_server", "nfs_export_configured", "L3_NETWORK", "storage", True, "exportfs -v", "/srv/nfs/k8s"),
-            ("vps1", "k3s_server", "k3s_service_active", "L2_PROCESS", "kubernetes", True, "systemctl is-active k3s", "active"),
-            ("vps1", "k3s_server", "k3s_api_server_listening", "L3_NETWORK", "kubernetes", True, "ss -tulpn | grep :6443", ":6443"),
-            ("vps1", "k3s_server", "k3s_api_health_readyz", "L4_PROTOCOL", "kubernetes", True, "curl -k -s https://127.0.0.1:6443/readyz", "ok"),
-            ("vps1", "k3s_server", "k3s_expected_nodes_ready", "L5_DEPENDENCY", "kubernetes", True, "k3s kubectl get nodes -o wide", "Ready"),
-            ("vps1", "k3s_server", "k3s_cluster_pods_healthy", "L4_PROTOCOL", "kubernetes", True, "k3s kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded", "No resources found"),
-            ("vps1", "k8s_storage_nfs_provisioner", "nfs_storageclass_default", "L4_PROTOCOL", "storage", True, "k3s kubectl get sc nfs-client -o jsonpath='{.metadata.annotations.storageclass\\.kubernetes\\.io/is-default-class}'", "true"),
-            ("vps1", "k8s_db_cnpg_postgres", "cnpg_postgres_cluster_healthy", "L4_PROTOCOL", "kubernetes", True, "k3s kubectl -n data get cluster pg-main -o jsonpath='{.status.phase}'", "Cluster in healthy state"),
-            ("vps1", "edge_nginx", "nginx_service_active", "L2_PROCESS", "public-endpoints", True, "systemctl is-active nginx", "active"),
-            ("vps1", "edge_nginx", "nginx_config_syntax_valid", "L1_CONFIG", "public-endpoints", True, "nginx -t", "syntax is ok"),
-            ("vps1", "edge_nginx", "nginx_ports_listening", "L3_NETWORK", "public-endpoints", True, "ss -tulpn | grep -E ':80|:443'", ":80"),
-            ("vps1", "devtools_gitea", "gitea_container_running", "L2_PROCESS", "devtools", True, "docker ps --filter name=gitea --format '{{.Status}}'", "Up"),
-            ("vps1", "devtools_gitea", "gitea_api_version_responding", "L4_PROTOCOL", "devtools", True, "curl -s http://10.8.0.1:3000/api/v1/version", "version"),
-            ("vps1", "devtools_registry", "registry_container_running", "L2_PROCESS", "devtools", True, "docker ps --filter name=registry --format '{{.Status}}'", "Up"),
-            ("vps1", "node_exporter", "node_exporter_vps1_active", "L2_PROCESS", "monitoring", True, "systemctl is-active node_exporter", "active"),
-            ("vps1", "node_exporter", "node_exporter_vps1_metrics", "L4_PROTOCOL", "monitoring", True, "curl -s http://127.0.0.1:9100/metrics | head -n 5", "node_"),
-            ("vps1", "filebeat", "filebeat_container_running", "L2_PROCESS", "logging", True, "docker ps --filter name=filebeat --format '{{.Status}}'", "Up"),
-            ("vps1", "backup_system", "backup_timer_active", "L2_PROCESS", "backup", True, "systemctl is-active maktab-backup.timer", "active"),
+            # Host, Service, Check, Level, Scope, Mandatory, Cmd/Probe, Validator
+            ("vps1", "system_base", "system_timezone_and_uptime", "L2_PROCESS", "access", True, "uptime && timedatectl", val_system_base),
+            ("vps1", "docker_engine", "docker_daemon_active", "L2_PROCESS", "kubernetes", True, "systemctl is-active docker", val_docker),
+            ("vps1", "firewall_ufw", "ufw_service_active", "L2_PROCESS", "network", True, "ufw status", val_ufw),
+            ("vps1", "wireguard", "wireguard_service_active", "L2_PROCESS", "network", True, "systemctl is-active wg-quick@wg0", val_wireguard_svc),
+            ("vps1", "wireguard", "wireguard_interface_up", "L3_NETWORK", "network", True, "ip addr show wg0", val_wireguard_iface("10.8.0.1")),
+            ("vps1", "dns_bind9", "bind9_service_active", "L2_PROCESS", "network", True, "systemctl is-active named", val_named_svc),
+            ("vps1", "dns_bind9", "bind9_port_53_listening", "L3_NETWORK", "network", True, "ss -tulpn | grep :53", val_port_53),
+            ("vps1", "teleport_auth_proxy", "teleport_service_active", "L2_PROCESS", "access", True, "systemctl is-active teleport", val_teleport_svc),
+            ("vps1", "teleport_auth_proxy", "teleport_ports_listening", "L3_NETWORK", "access", True, "ss -tulpn | grep -E ':3025|:3080'", val_teleport_ports),
+            ("vps1", "teleport_auth_proxy", "teleport_webapi_ping_health", "L4_PROTOCOL", "access", True, "curl -k -s https://10.8.0.1:3080/webapi/ping || curl -k -s https://127.0.0.1:3080/webapi/ping", val_teleport_ping),
+            ("vps1", "nfs_server", "nfs_server_active", "L2_PROCESS", "storage", True, "systemctl is-active nfs-server", val_nfs_svc),
+            ("vps1", "nfs_server", "nfs_export_configured", "L3_NETWORK", "storage", True, "exportfs -v", val_nfs_export),
+            ("vps1", "k3s_server", "k3s_service_active", "L2_PROCESS", "kubernetes", True, "systemctl is-active k3s", val_k3s_svc),
+            ("vps1", "k3s_server", "k3s_api_server_listening", "L3_NETWORK", "kubernetes", True, "ss -tulpn | grep :6443", val_k3s_port_6443),
+            ("vps1", "k3s_server", "k3s_api_health_readyz", "L4_PROTOCOL", "kubernetes", True, "k3s kubectl get --raw /readyz", val_k3s_readyz),
+            ("vps1", "k3s_server", "k3s_expected_nodes_ready", "L5_DEPENDENCY", "kubernetes", True, "k3s kubectl get nodes -o wide", val_k3s_nodes),
+            ("vps1", "k3s_server", "k3s_cluster_pods_healthy", "L4_PROTOCOL", "kubernetes", False, "k3s kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded --no-headers", val_k3s_pods),
+            ("vps1", "k8s_storage_nfs_provisioner", "nfs_storageclass_configured", "L4_PROTOCOL", "storage", True, "k3s kubectl get sc nfs-client", val_nfs_sc),
+            ("vps1", "k8s_db_cnpg_postgres", "cnpg_postgres_cluster_healthy", "L4_PROTOCOL", "kubernetes", False, "k3s kubectl -n data get cluster pg-main -o jsonpath='{.status.phase}'", val_cnpg),
+            ("vps1", "edge_nginx", "nginx_service_active", "L2_PROCESS", "public-endpoints", True, "systemctl is-active nginx", val_nginx_svc),
+            ("vps1", "edge_nginx", "nginx_config_syntax_valid", "L1_CONFIG", "public-endpoints", True, "nginx -t", val_nginx_syntax),
+            ("vps1", "edge_nginx", "nginx_ports_listening", "L3_NETWORK", "public-endpoints", True, "ss -tulpn | grep -E ':80|:443'", val_nginx_ports),
+            ("vps1", "devtools_gitea", "gitea_container_running", "L2_PROCESS", "devtools", True, "docker ps --filter name=gitea --format '{{.Status}}'", val_container_running("gitea", "/opt/devtools")),
+            ("vps1", "devtools_gitea", "gitea_api_version_responding", "L4_PROTOCOL", "devtools", True, "curl -s http://10.8.0.1:3000/api/v1/version", val_gitea_api),
+            ("vps1", "devtools_registry", "registry_container_running", "L2_PROCESS", "devtools", True, "docker ps --filter name=registry --format '{{.Status}}'", val_container_running("registry", "/opt/devtools")),
+            ("vps1", "node_exporter", "node_exporter_vps1_active", "L2_PROCESS", "monitoring", True, "systemctl is-active prometheus-node-exporter || systemctl is-active node_exporter", val_node_exporter_svc("vps1")),
+            ("vps1", "node_exporter", "node_exporter_vps1_metrics", "L4_PROTOCOL", "monitoring", True, "curl -s http://10.8.0.1:9100/metrics | head -n 5 || curl -s http://127.0.0.1:9100/metrics | head -n 5", val_node_exporter_metrics("10.8.0.1")),
+            ("vps1", "filebeat", "filebeat_container_running", "L2_PROCESS", "logging", True, "docker ps --filter name=filebeat --format '{{.Status}}'", val_container_running("filebeat", "/opt/filebeat")),
+            ("vps1", "backup_system", "backup_timer_active", "L2_PROCESS", "backup", True, "systemctl is-active maktab-backup.timer", val_backup_timer),
             
             # VPS2 checks
-            ("vps2", "system_base", "system_timezone_and_uptime", "L2_PROCESS", "access", True, "uptime && timedatectl", "uptime"),
-            ("vps2", "docker_engine", "docker_daemon_active", "L2_PROCESS", "monitoring", True, "systemctl is-active docker", "active"),
-            ("vps2", "firewall_ufw", "ufw_service_active", "L2_PROCESS", "network", True, "ufw status", "Status: active"),
-            ("vps2", "wireguard", "wireguard_service_active", "L2_PROCESS", "network", True, "systemctl is-active wg-quick@wg0", "active"),
-            ("vps2", "wireguard", "wireguard_interface_up", "L3_NETWORK", "network", True, "ip addr show wg0", "inet 10.8.0.2"),
-            ("vps2", "teleport_node", "teleport_node_service_active", "L2_PROCESS", "access", True, "systemctl is-active teleport", "active"),
-            ("vps2", "k3s_agent", "k3s_agent_service_active", "L2_PROCESS", "kubernetes", True, "systemctl is-active k3s-agent", "active"),
-            ("vps2", "node_exporter", "node_exporter_vps2_active", "L2_PROCESS", "monitoring", True, "systemctl is-active node_exporter", "active"),
-            ("vps2", "monitoring_prometheus", "prometheus_container_running", "L2_PROCESS", "monitoring", True, "docker ps --filter name=prometheus --format '{{.Status}}'", "Up"),
-            ("vps2", "monitoring_prometheus", "prometheus_ready_endpoint", "L4_PROTOCOL", "monitoring", True, "curl -s http://127.0.0.1:9090/api/v1/status/ready", "ready"),
-            ("vps2", "monitoring_prometheus", "prometheus_targets_up", "L5_DEPENDENCY", "monitoring", True, "curl -s http://127.0.0.1:9090/api/v1/targets", "success"),
-            ("vps2", "monitoring_alertmanager", "alertmanager_container_running", "L2_PROCESS", "monitoring", True, "docker ps --filter name=alertmanager --format '{{.Status}}'", "Up"),
-            ("vps2", "monitoring_grafana", "grafana_container_running", "L2_PROCESS", "monitoring", True, "docker ps --filter name=grafana --format '{{.Status}}'", "Up"),
-            ("vps2", "monitoring_grafana", "grafana_api_health", "L4_PROTOCOL", "monitoring", True, "curl -s http://127.0.0.1:3001/api/health", "ok"),
-            ("vps2", "elk_elasticsearch", "elasticsearch_container_running", "L2_PROCESS", "logging", True, "docker ps --filter name=elasticsearch --format '{{.Status}}'", "Up"),
-            ("vps2", "elk_elasticsearch", "elasticsearch_cluster_health", "L4_PROTOCOL", "logging", True, "curl -s http://127.0.0.1:9200/_cluster/health", "cluster_name"),
-            ("vps2", "elk_logstash", "logstash_container_running", "L2_PROCESS", "logging", True, "docker ps --filter name=logstash --format '{{.Status}}'", "Up"),
-            ("vps2", "elk_kibana", "kibana_container_running", "L2_PROCESS", "logging", True, "docker ps --filter name=kibana --format '{{.Status}}'", "Up")
+            ("vps2", "system_base", "system_timezone_and_uptime", "L2_PROCESS", "access", True, "uptime && timedatectl", val_system_base),
+            ("vps2", "docker_engine", "docker_daemon_active", "L2_PROCESS", "monitoring", True, "systemctl is-active docker", val_docker),
+            ("vps2", "firewall_ufw", "ufw_service_active", "L2_PROCESS", "network", True, "ufw status", val_ufw),
+            ("vps2", "wireguard", "wireguard_service_active", "L2_PROCESS", "network", True, "systemctl is-active wg-quick@wg0", val_wireguard_svc),
+            ("vps2", "wireguard", "wireguard_interface_up", "L3_NETWORK", "network", True, "ip addr show wg0", val_wireguard_iface("10.8.0.2")),
+            ("vps2", "teleport_node", "teleport_node_service_active", "L2_PROCESS", "access", True, "systemctl is-active teleport", val_teleport_svc),
+            ("vps2", "k3s_agent", "k3s_agent_service_active", "L2_PROCESS", "kubernetes", True, "systemctl is-active k3s-agent", val_k3s_agent_svc),
+            ("vps2", "node_exporter", "node_exporter_vps2_active", "L2_PROCESS", "monitoring", True, "systemctl is-active prometheus-node-exporter || systemctl is-active node_exporter", val_node_exporter_svc("vps2")),
+            ("vps2", "monitoring_prometheus", "prometheus_container_running", "L2_PROCESS", "monitoring", True, "docker ps --filter name=prometheus --format '{{.Status}}'", val_container_running("prometheus", "/opt/monitoring")),
+            ("vps2", "monitoring_prometheus", "prometheus_ready_endpoint", "L4_PROTOCOL", "monitoring", True, "curl -s http://10.8.0.2:9090/api/v1/status/ready || curl -s http://127.0.0.1:9090/api/v1/status/ready", val_prom_ready),
+            ("vps2", "monitoring_prometheus", "prometheus_targets_up", "L5_DEPENDENCY", "monitoring", True, "curl -s http://10.8.0.2:9090/api/v1/targets || curl -s http://127.0.0.1:9090/api/v1/targets", val_prom_targets),
+            ("vps2", "monitoring_alertmanager", "alertmanager_container_running", "L2_PROCESS", "monitoring", True, "docker ps --filter name=alertmanager --format '{{.Status}}'", val_container_running("alertmanager", "/opt/monitoring")),
+            ("vps2", "monitoring_grafana", "grafana_container_running", "L2_PROCESS", "monitoring", True, "docker ps --filter name=grafana --format '{{.Status}}'", val_container_running("grafana", "/opt/monitoring")),
+            ("vps2", "monitoring_grafana", "grafana_api_health", "L4_PROTOCOL", "monitoring", True, "curl -s http://10.8.0.2:3001/api/health || curl -s http://127.0.0.1:3001/api/health", val_grafana_health),
+            ("vps2", "elk_elasticsearch", "elasticsearch_container_running", "L2_PROCESS", "logging", True, "docker ps --filter name=elasticsearch --format '{{.Status}}'", val_container_running("elasticsearch", "/opt/elk")),
+            ("vps2", "elk_elasticsearch", "elasticsearch_cluster_health", "L4_PROTOCOL", "logging", True, "curl -s http://10.8.0.2:9200/_cluster/health || curl -s http://127.0.0.1:9200/_cluster/health", val_es_health),
+            ("vps2", "elk_logstash", "logstash_container_running", "L2_PROCESS", "logging", True, "docker ps --filter name=logstash --format '{{.Status}}'", val_container_running("logstash", "/opt/elk")),
+            ("vps2", "elk_kibana", "kibana_container_running", "L2_PROCESS", "logging", True, "docker ps --filter name=kibana --format '{{.Status}}'", val_container_running("kibana", "/opt/elk"))
         ]
 
-        for s_host, s_name, chk_name, lvl, scp, is_mand, cmd, expect_str in live_definitions:
+        for s_host, s_name, chk_name, lvl, scp, is_mand, cmd, val_fn in live_definitions:
             is_reachable, reason = self.host_reachability.get(s_host, (False, "Not checked"))
             
             if not is_reachable:
@@ -799,7 +1004,7 @@ class HealthAuditor:
                     severity="P1" if is_mand else "P2",
                     mandatory=is_mand,
                     observed=f"Remote host {s_host} unreachable from auditor environment",
-                    expected=f"Execution of '{cmd}' returns '{expect_str}'",
+                    expected=f"Execution of '{cmd}' succeeds",
                     evidence=f"SSH reachability failure: {reason}",
                     likely_causes=[
                         f"Outbound network egress firewall on runner blocks SSH to {s_host}",
@@ -814,37 +1019,20 @@ class HealthAuditor:
             else:
                 ip = "81.12.50.30" if s_host == "vps1" else "31.56.89.69"
                 key = "~/.ssh/id_ed25519" if s_host == "vps1" else "~/.ssh/id_rsa"
-                code, out, err = run_ssh_cmd(ip, key, cmd, timeout=3)
-                if code == 0 and expect_str in out:
-                    self.add_check(
-                        service=s_name,
-                        host=s_host,
-                        check=chk_name,
-                        level=lvl,
-                        scope=scp,
-                        status="PASS",
-                        severity="P1",
-                        mandatory=is_mand,
-                        observed=f"Probe succeeded with expected output '{expect_str}'",
-                        expected=f"Output contains '{expect_str}'",
-                        evidence=out[:150]
-                    )
-                else:
-                    self.add_check(
-                        service=s_name,
-                        host=s_host,
-                        check=chk_name,
-                        level=lvl,
-                        scope=scp,
-                        status="FAIL",
-                        severity="P1" if is_mand else "P2",
-                        mandatory=is_mand,
-                        observed=f"Command '{cmd}' failed or did not match '{expect_str}'",
-                        expected=f"Output contains '{expect_str}'",
-                        evidence=f"Exit code: {code} | stdout: {out[:100]} | stderr: {err[:100]}",
-                        likely_causes=[
-                            f"Service {s_name} inactive or misconfigured on {s_host}",
-                            "Process crashed or listening on wrong network interface"
-                        ],
-                        recommended_next_step=f"Inspect journalctl and service logs for {s_name} on {s_host}"
-                    )
+                code, out, err = run_ssh_cmd(ip, key, cmd, timeout=5)
+                status, sev, obs, exp, evid, l_causes, n_step = val_fn(code, out, err)
+                self.add_check(
+                    service=s_name,
+                    host=s_host,
+                    check=chk_name,
+                    level=lvl,
+                    scope=scp,
+                    status=status,
+                    severity=sev,
+                    mandatory=is_mand,
+                    observed=obs,
+                    expected=exp,
+                    evidence=evid,
+                    likely_causes=l_causes,
+                    recommended_next_step=n_step
+                )

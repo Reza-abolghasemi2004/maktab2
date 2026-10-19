@@ -1,4 +1,4 @@
-{% if alert_channel == 'email' %}
+{% if alert_channel == 'email' and smtp_password != 'CHANGE_ME' %}
 global:
   smtp_smarthost: "{{ smtp_host }}"
   smtp_from: "{{ smtp_from }}"
@@ -17,19 +17,23 @@ route:
       repeat_interval: 1h
 receivers:
   - name: default
-{% if alert_channel == 'telegram' %}
+{% if alert_channel == 'telegram' and telegram_bot_token != 'CHANGE_ME' and (telegram_chat_id | string | trim) != '0' and (telegram_chat_id | string | trim) != '' %}
     telegram_configs:
       - bot_token: "{{ telegram_bot_token }}"
         chat_id: {{ telegram_chat_id }}
         send_resolved: true
-{% elif alert_channel == 'email' %}
+{% elif alert_channel == 'email' and smtp_password != 'CHANGE_ME' %}
     email_configs:
       - to: "{{ alert_email_to }}"
         send_resolved: true
-{% elif alert_channel == 'slack' %}
+{% elif alert_channel == 'slack' and slack_webhook_url != 'CHANGE_ME' %}
     slack_configs:
       - api_url: "{{ slack_webhook_url }}"
         send_resolved: true
         title: '[{% raw %}{{ .Status | toUpper }}{% endraw %}] {% raw %}{{ .CommonLabels.alertname }}{% endraw %}'
         text: '{% raw %}{{ range .Alerts }}{{ .Annotations.summary }}{{ "\n" }}{{ end }}{% endraw %}'
+{% else %}
+    # Safe null/blackhole receiver: External channel credentials are not configured or placeholder tokens are detected.
+    # Alerts are accepted and indexed in Alertmanager / Prometheus UI without dispatching or crashing.
 {% endif %}
+

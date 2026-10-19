@@ -36,6 +36,22 @@ def test_alertmanager_template():
     assert default_rcv_valid["telegram_configs"][0]["chat_id"] == 987654321
     print("  [PASS] Valid Telegram config correctly rendered.")
 
+    # Fallback when credentials are CHANGE_ME / 0
+    context_fallback = {
+        "alert_channel": "telegram",
+        "telegram_bot_token": "CHANGE_ME",
+        "telegram_chat_id": 0,
+        "smtp_host": "smtp.example.com",
+        "smtp_password": "CHANGE_ME",
+        "slack_webhook_url": "CHANGE_ME"
+    }
+    rendered_fallback = template.render(context_fallback)
+    parsed_fallback = yaml.safe_load(rendered_fallback)
+    default_rcv_fallback = parsed_fallback["receivers"][0]
+    assert "telegram_configs" not in default_rcv_fallback, "Invalid placeholder telegram config rendered!"
+    assert default_rcv_fallback["name"] == "default"
+    print("  [PASS] Safe fallback null receiver correctly rendered when CHANGE_ME is detected.")
+
 def test_k3s_registries_template():
     print("Testing K3s registries.yaml.j2 template...")
     env = get_env(os.path.join(REPO_ROOT, "roles/k3s/templates"))
