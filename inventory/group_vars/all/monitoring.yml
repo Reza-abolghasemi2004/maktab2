@@ -1,7 +1,7 @@
 ---
 # ───────── Alerting ─────────
 alert_channel: telegram          # telegram | email | slack
-telegram_bot_token: "CHANGE_ME"
+telegram_bot_token: "8926688013:AAFbXewmm9mEn69syC22y0xxBOwSe5dk_1Q"
 telegram_chat_id: 0              # عدد chat id
 smtp_host: "smtp.example.com:587"
 smtp_from: "alerts@example.com"

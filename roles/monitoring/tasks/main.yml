@@ -17,8 +17,20 @@
   notify: reload prometheus
 - ansible.builtin.copy: { src: alerts.yml, dest: /opt/monitoring/prometheus/rules/maktab.yml, mode: "0644" }
   notify: reload prometheus
-- ansible.builtin.template: { src: alertmanager.yml.j2, dest: /opt/monitoring/alertmanager/alertmanager.yml, mode: "0640" }
+
+- name: Deploy Alertmanager configuration
+  ansible.builtin.template:
+    src: alertmanager.yml.j2
+    dest: /opt/monitoring/alertmanager/alertmanager.yml
+    owner: root
+    group: "65534"
+    mode: "0640"
   notify: reload alertmanager
+
+#- ansible.builtin.template: { src: alertmanager.yml.j2, dest: /opt/monitoring/alertmanager/alertmanager.yml, mode: "0640" }
+#  notify: reload alertmanager
+
+
 - ansible.builtin.template: { src: blackbox.yml.j2, dest: /opt/monitoring/blackbox/blackbox.yml, mode: "0644" }
   notify: reload blackbox
 

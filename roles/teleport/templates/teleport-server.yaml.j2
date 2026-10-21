@@ -13,10 +13,13 @@ auth_service:
 proxy_service:
   enabled: true
   web_listen_addr: {{ hub_ip }}:3080      # فقط از VPN قابل دسترس است
+  tunnel_listen_addr: {{ hub_ip }}:3024
   public_addr: teleport.{{ private_domain }}:3080
   https_keypairs:
     - cert_file: /etc/maktab/tls/fullchain.crt
       key_file: /etc/maktab/tls/wildcard.key
+
+
 ssh_service:
   enabled: true
   labels: { role: edge, env: prod }
