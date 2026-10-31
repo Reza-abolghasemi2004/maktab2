@@ -1,0 +1,187 @@
+---
+- name: Require explicit confirmation and a public SSH connection
+  ansible.builtin.assert:
+    that:
+      - backtofirst_confirm | default(false) | bool
+      - ansible_connection | default('ssh') in ['ssh', 'paramiko']
+      - ansible_host | default(inventory_hostname) != wg_ip
+    fail_msg: >-
+      Destructive reset refused. Connect directly over the public SSH address,
+      verify independent SSH access, and pass -e backtofirst_confirm=true.
+
+- name: Refuse check mode (uninstall scripts cannot be simulated safely)
+  ansible.builtin.assert:
+    that: not ansible_check_mode
+    fail_msg: Check mode cannot safely simulate this reset.
+
+- name: Gather service state
+  ansible.builtin.service_facts:
+
+- name: Stop deployment services that exist
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop:
+    - maktab-backup.timer
+    - maktab-backup.service
+    - teleport.service
+    - prometheus-node-exporter.service
+    - nginx.service
+    - bind9.service
+  when: item in ansible_facts.services
+
+- name: Find deployed Compose files
+  ansible.builtin.stat:
+    path: "/opt/{{ item }}/docker-compose.yml"
+  loop: [devtools, filebeat, elk, monitoring]
+  register: compose_files
+
+- name: Stop only deployment Compose projects
+  ansible.builtin.command:
+    argv: [docker, compose, -f, "{{ item.stat.path }}", down, --remove-orphans, --volumes]
+  loop: "{{ compose_files.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.stat.exists
+  changed_when: true
+
+- name: Find k3s uninstall scripts
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: [/usr/local/bin/k3s-agent-uninstall.sh, /usr/local/bin/k3s-uninstall.sh]
+  register: k3s_uninstall
+
+- name: Uninstall k3s using its official scripts
+  ansible.builtin.command: "{{ item.stat.path }}"
+  loop: "{{ k3s_uninstall.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.stat.exists
+  changed_when: true
+
+- name: Stop the NFS server after k3s is removed
+  ansible.builtin.systemd:
+    name: nfs-server.service
+    state: stopped
+    enabled: false
+  when: "'nfs-server.service' in ansible_facts.services"
+
+- name: Remove Maktab NFS export
+  ansible.builtin.file:
+    path: /etc/exports.d/maktab.exports
+    state: absent
+  register: nfs_export_removed
+
+- name: Refresh exports if NFS is installed
+  ansible.builtin.command: exportfs -ra
+  when: nfs_export_removed.changed and 'nfs-server.service' in ansible_facts.services
+  changed_when: true
+
+- name: Stop WireGuard after dependent services
+  ansible.builtin.systemd:
+    name: wg-quick@wg0.service
+    state: stopped
+    enabled: false
+  when: "'wg-quick@wg0.service' in ansible_facts.services"
+
+- name: Disable UFW before removing its deployment rules
+  community.general.ufw:
+    state: disabled
+  when: "'ufw.service' in ansible_facts.services"
+
+- name: Remove Maktab UFW rule blocks
+  ansible.builtin.blockinfile:
+    path: "{{ item.path }}"
+    marker: "{{ item.marker }}"
+    state: absent
+  loop:
+    - {path: /etc/ufw/before.rules, marker: '# {mark} MAKTAB RAW'}
+    - {path: /etc/ufw/after.rules, marker: '# {mark} MAKTAB DOCKER-USER'}
+  when: "'ufw.service' in ansible_facts.services"
+
+- name: Remove Maktab hosts block
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: '# {mark} MAKTAB'
+    state: absent
+
+- name: Remove deployment files and application data
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /opt/devtools
+    - /opt/repos
+    - /opt/monitoring
+    - /opt/elk
+    - /opt/filebeat
+    - /srv/gitea
+    - /srv/registry
+    - /srv/act_runner
+    - /srv/prometheus
+    - /srv/alertmanager
+    - /srv/grafana
+    - /srv/elasticsearch
+    - /srv/filebeat
+    - /etc/rancher/k3s
+    - /usr/local/bin/k3s-install.sh
+    - /etc/wireguard/wg0.conf
+    - /etc/wireguard/private.key
+    - /etc/wireguard/public.key
+    - /etc/teleport.yaml
+    - /etc/systemd/system/teleport.service
+    - /var/lib/teleport
+    - /root/teleport-admin-invite.txt
+    - /etc/systemd/system/maktab-backup.service
+    - /etc/systemd/system/maktab-backup.timer
+    - /usr/local/sbin/maktab-backup.sh
+    - /root/.ssh/backup_ed25519
+    - /root/.ssh/backup_ed25519.pub
+    - /etc/systemd/system/bind9.service.d/override.conf
+    - /etc/fail2ban/jail.d/maktab.local
+    - /etc/default/prometheus-node-exporter
+    - /etc/nginx/conf.d/maktab.conf
+    - /etc/nginx/snippets/maktab-proxy.conf
+    - /etc/nginx/sites-enabled/public.conf
+    - /etc/nginx/sites-enabled/internal.conf
+    - /var/cache/nginx/static
+    - /etc/maktab/tls
+    - /usr/local/share/ca-certificates/maktab-ca.crt
+  register: removed_files
+
+- name: Remove private DNS zone
+  ansible.builtin.file:
+    path: "/etc/bind/db.{{ private_domain }}"
+    state: absent
+
+- name: Update trusted CA store
+  ansible.builtin.command: update-ca-certificates
+  when: removed_files.changed
+  changed_when: true
+
+- name: Reload systemd units
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Verify SSH configuration and service remain available
+  ansible.builtin.command: /usr/sbin/sshd -t
+  changed_when: false
+
+- name: Ensure SSH service is enabled and running
+  ansible.builtin.service:
+    name: ssh
+    state: started
+    enabled: true
+
+- name: Reload fail2ban without the project jail
+  ansible.builtin.service:
+    name: fail2ban
+    state: restarted
+  when: "'fail2ban.service' in ansible_facts.services and ansible_facts.services['fail2ban.service'].state == 'running'"
+
+- name: Check SSH is listening on the configured port
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ ansible_port | default(22) }}"
+    timeout: 15

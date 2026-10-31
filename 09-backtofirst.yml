@@ -1,0 +1,9 @@
+---
+# Destructive and deliberately not included in site.yml.
+- name: Remove the Maktab deployment from VPS hosts
+  hosts: vps
+  become: true
+  serial: 1
+  any_errors_fatal: true
+  roles:
+    - backtofirst
