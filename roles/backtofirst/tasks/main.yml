@@ -17,11 +17,10 @@
 - name: Gather service state
   ansible.builtin.service_facts:
 
-- name: Stop deployment services that exist
-  ansible.builtin.systemd:
-    name: "{{ item }}"
-    state: stopped
-    enabled: false
+# service_facts includes stale/not-found units and does not list timers.
+- name: Check which deployment systemd units are actually loaded
+  ansible.builtin.command:
+    argv: [systemctl, show, --property=LoadState, --value, "{{ item }}"]
   loop:
     - maktab-backup.timer
     - maktab-backup.service
@@ -29,7 +28,25 @@
     - prometheus-node-exporter.service
     - nginx.service
     - bind9.service
-  when: item in ansible_facts.services
+    - named.service
+    - nfs-server.service
+    - wg-quick@wg0.service
+  register: backtofirst_units
+  changed_when: false
+  failed_when: item.rc != 0 and (item.stdout | trim) != 'not-found'
+
+- name: Stop loaded deployment services and backup timer
+  ansible.builtin.systemd:
+    name: "{{ item.item }}"
+    state: stopped
+    enabled: false
+  loop: "{{ backtofirst_units.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - item.item not in ['nfs-server.service', 'wg-quick@wg0.service']
+    - item.rc == 0
+    - item.stdout | trim == 'loaded'
 
 - name: Find deployed Compose files
   ansible.builtin.stat:
@@ -65,7 +82,7 @@
     name: nfs-server.service
     state: stopped
     enabled: false
-  when: "'nfs-server.service' in ansible_facts.services"
+  when: (backtofirst_units.results | selectattr('item', 'equalto', 'nfs-server.service') | selectattr('stdout', 'equalto', 'loaded') | selectattr('rc', 'equalto', 0) | list | length) > 0
 
 - name: Remove Maktab NFS export
   ansible.builtin.file:
@@ -75,7 +92,7 @@
 
 - name: Refresh exports if NFS is installed
   ansible.builtin.command: exportfs -ra
-  when: nfs_export_removed.changed and 'nfs-server.service' in ansible_facts.services
+  when: nfs_export_removed.changed and (backtofirst_units.results | selectattr('item', 'equalto', 'nfs-server.service') | selectattr('stdout', 'equalto', 'loaded') | selectattr('rc', 'equalto', 0) | list | length) > 0
   changed_when: true
 
 - name: Stop WireGuard after dependent services
@@ -83,7 +100,7 @@
     name: wg-quick@wg0.service
     state: stopped
     enabled: false
-  when: "'wg-quick@wg0.service' in ansible_facts.services"
+  when: (backtofirst_units.results | selectattr('item', 'equalto', 'wg-quick@wg0.service') | selectattr('stdout', 'equalto', 'loaded') | selectattr('rc', 'equalto', 0) | list | length) > 0
 
 - name: Disable UFW before removing its deployment rules
   community.general.ufw:
