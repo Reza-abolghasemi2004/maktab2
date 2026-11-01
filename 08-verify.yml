@@ -88,6 +88,9 @@
   hosts: edge
   become: true
   gather_facts: false
+  vars:
+    # Role defaults are not automatically loaded by this standalone playbook.
+    verify_public_cert: "{{ edge_public_cert | default('/etc/letsencrypt/live/maktab/fullchain.pem' if letsencrypt_enabled | bool else '/etc/maktab/tls/fullchain.crt') }}"
   tasks:
     - name: Validate Nginx syntax
       ansible.builtin.command: nginx -t
@@ -148,6 +151,10 @@
           - curl
           - --silent
           - --show-error
+          - --noproxy
+          - "*"
+          - --max-time
+          - "10"
           - --output
           - /dev/null
           - --write-out
@@ -176,6 +183,10 @@
           - curl
           - --silent
           - --show-error
+          - --noproxy
+          - "*"
+          - --max-time
+          - "10"
           - --output
           - /dev/null
           - --write-out
@@ -199,6 +210,10 @@
           - curl
           - --silent
           - --show-error
+          - --noproxy
+          - "*"
+          - --max-time
+          - "10"
           - --output
           - /dev/null
           - --write-out
@@ -224,7 +239,7 @@
           - openssl
           - x509
           - -in
-          - "{{ edge_public_cert }}"
+          - "{{ verify_public_cert }}"
           - -noout
           - -checkhost
           - "{{ item }}"
@@ -237,7 +252,7 @@
 
     - name: Check whether the public certificate is currently valid
       ansible.builtin.command:
-        argv: [openssl, x509, -in, "{{ edge_public_cert }}", -noout, -checkend, "0"]
+        argv: [openssl, x509, -in, "{{ verify_public_cert }}", -noout, -checkend, "0"]
       register: verify_public_cert_expiry
       changed_when: false
       failed_when: false
@@ -327,6 +342,7 @@
           - "'vps2' in verify_teleport_nodes.stdout"
           - verify_log_marker_request.rc == 0
           - (verify_public_cert_names.results | rejectattr('rc', 'equalto', 0) | list | length) == 0
+          - (verify_public_cert_names.results | selectattr('stdout', 'search', ' does match certificate') | list | length) == (verify_public_cert_names.results | length)
           - verify_public_cert_expiry.rc == 0
           - verify_runner_registration.stat.exists
           - verify_backup_syntax.rc == 0
@@ -340,7 +356,7 @@
           Teleport HTTP={{ verify_teleport_proxy.stdout | default('000') }};
           Teleport registered nodes={{ verify_teleport_nodes.stdout | default('unavailable') }};
           Nginx marker request rc={{ verify_log_marker_request.rc | default(1) }};
-          Public certificate hostname checks={{ verify_public_cert_names.results | map(attribute='rc') | list }};
+          Public certificate {{ verify_public_cert }} hostname checks={{ verify_public_cert_names.results | map(attribute='stdout') | list }}; errors={{ verify_public_cert_names.results | map(attribute='stderr') | list }};
           public certificate expiry rc={{ verify_public_cert_expiry.rc | default(1) }};
           runner_registered={{ verify_runner_registration.stat.exists | default(false) }};
           backup_script_syntax_rc={{ verify_backup_syntax.rc | default(1) }};
