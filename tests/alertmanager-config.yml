@@ -1,0 +1,30 @@
+---
+- name: Verify Alertmanager templates without starting services
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    alert_channel: telegram
+    telegram_bot_token: test-token
+    telegram_chat_id: 1234
+  tasks:
+    - name: Render unconfigured receiver
+      ansible.builtin.set_fact:
+        unconfigured_config: "{{ lookup('template', '../roles/monitoring/templates/alertmanager.yml.j2') | from_yaml }}"
+      vars:
+        alert_notifications_configured: false
+    - name: Verify no-op receiver has no broken Telegram settings
+      ansible.builtin.assert:
+        that:
+          - unconfigured_config.receivers[0].name == 'default'
+          - unconfigured_config.receivers[0].telegram_configs is not defined
+    - name: Render configured Telegram receiver
+      ansible.builtin.set_fact:
+        configured_config: "{{ lookup('template', '../roles/monitoring/templates/alertmanager.yml.j2') | from_yaml }}"
+      vars:
+        alert_notifications_configured: true
+    - name: Verify Telegram receiver is present
+      ansible.builtin.assert:
+        that:
+          - configured_config.receivers[0].telegram_configs[0].chat_id == 1234
+          - configured_config.receivers[0].telegram_configs[0].bot_token == 'test-token'

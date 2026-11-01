@@ -18,6 +18,7 @@ services:
   alertmanager:
     image: {{ alertmanager_image }}
     container_name: alertmanager
+    user: "65534:65534"
     network_mode: host
     restart: unless-stopped
     mem_limit: 64m

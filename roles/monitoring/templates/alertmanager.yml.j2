@@ -1,4 +1,4 @@
-{% if alert_channel == 'email' %}
+{% if alert_notifications_configured | bool and alert_channel == 'email' %}
 global:
   smtp_smarthost: "{{ smtp_host }}"
   smtp_from: "{{ smtp_from }}"
@@ -17,16 +17,16 @@ route:
       repeat_interval: 1h
 receivers:
   - name: default
-{% if alert_channel == 'telegram' %}
+{% if alert_notifications_configured | bool and alert_channel == 'telegram' %}
     telegram_configs:
       - bot_token: "{{ telegram_bot_token }}"
         chat_id: {{ telegram_chat_id }}
         send_resolved: true
-{% elif alert_channel == 'email' %}
+{% elif alert_notifications_configured | bool and alert_channel == 'email' %}
     email_configs:
       - to: "{{ alert_email_to }}"
         send_resolved: true
-{% elif alert_channel == 'slack' %}
+{% elif alert_notifications_configured | bool and alert_channel == 'slack' %}
     slack_configs:
       - api_url: "{{ slack_webhook_url }}"
         send_resolved: true

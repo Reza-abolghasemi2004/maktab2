@@ -1,4 +1,25 @@
 ---
+- name: Validate the selected alert channel
+  ansible.builtin.assert:
+    that: alert_channel in ['telegram', 'email', 'slack']
+    fail_msg: "alert_channel must be telegram, email or slack."
+
+- name: Determine whether alert notification credentials are configured
+  ansible.builtin.set_fact:
+    alert_notifications_configured: >-
+      {{ (alert_channel == 'telegram' and telegram_bot_token | default('') | trim not in ['', 'CHANGE_ME'] and telegram_chat_id | default(0) | int != 0)
+         or (alert_channel == 'email' and smtp_host | default('') | trim not in ['', 'smtp.example.com:587', 'CHANGE_ME'] and smtp_from | default('') | trim not in ['', 'alerts@example.com', 'CHANGE_ME'] and alert_email_to | default('') | trim not in ['', 'ops@example.com', 'CHANGE_ME'] and smtp_password | default('') | trim not in ['', 'CHANGE_ME'])
+         or (alert_channel == 'slack' and slack_webhook_url | default('') | trim not in ['', 'CHANGE_ME']) }}
+  no_log: true
+
+- name: Warn when notifications are not configured
+  ansible.builtin.debug:
+    msg: >-
+      Alertmanager will run with a no-op receiver; NO notifications will be sent.
+      Configure the selected alert channel in inventory/group_vars/all/monitoring.yml
+      (prefer Ansible Vault for credentials), then rerun 06-monitoring.yml.
+  when: not alert_notifications_configured | bool
+
 - ansible.builtin.file: { path: "{{ item.path }}", state: directory, owner: "{{ item.owner | default('root') }}", mode: "0755" }
   loop:
     - { path: /opt/monitoring }
@@ -17,7 +38,14 @@
   notify: reload prometheus
 - ansible.builtin.copy: { src: alerts.yml, dest: /opt/monitoring/prometheus/rules/maktab.yml, mode: "0644" }
   notify: reload prometheus
-- ansible.builtin.template: { src: alertmanager.yml.j2, dest: /opt/monitoring/alertmanager/alertmanager.yml, mode: "0640" }
+- name: Install readable, restricted Alertmanager config
+  ansible.builtin.template:
+    src: alertmanager.yml.j2
+    dest: /opt/monitoring/alertmanager/alertmanager.yml
+    owner: root
+    group: "65534"
+    mode: "0640"
+  no_log: true
   notify: reload alertmanager
 - ansible.builtin.template: { src: blackbox.yml.j2, dest: /opt/monitoring/blackbox/blackbox.yml, mode: "0644" }
   notify: reload blackbox
@@ -45,3 +73,16 @@
   notify: restart grafana
 
 - community.docker.docker_compose_v2: { project_src: /opt/monitoring, state: present }
+
+- name: Apply monitoring configuration handlers before health check
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for Alertmanager readiness
+  ansible.builtin.uri:
+    url: "http://{{ wg_ip }}:9093/-/ready"
+    use_proxy: false
+    status_code: 200
+  register: alertmanager_ready
+  retries: 12
+  delay: 5
+  until: alertmanager_ready.status | default(0) == 200
