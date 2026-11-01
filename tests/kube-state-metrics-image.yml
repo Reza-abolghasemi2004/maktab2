@@ -1,0 +1,21 @@
+---
+- name: Verify kube-state-metrics image override
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    kube_state_metrics_image: mirror.example.invalid/kube-state-metrics:v2.13.0
+    blackbox_image: blackbox:test
+    np_ksm: 30085
+    np_blackbox_k8s: 30115
+  tasks:
+    - name: Render monitoring resources
+      ansible.builtin.set_fact:
+        resources: "{{ lookup('template', '../roles/k8s_platform/templates/monitoring-agents.yml.j2') | from_yaml_all | list }}"
+    - name: Select kube-state-metrics deployment
+      ansible.builtin.set_fact:
+        ksm_deployment: "{{ resources | selectattr('kind', 'equalto', 'Deployment') | selectattr('metadata.name', 'equalto', 'kube-state-metrics') | first }}"
+    - name: Confirm configured image is used
+      ansible.builtin.assert:
+        that:
+          - ksm_deployment.spec.template.spec.containers[0].image == kube_state_metrics_image

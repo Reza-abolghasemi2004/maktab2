@@ -35,7 +35,7 @@ spec:
       serviceAccountName: kube-state-metrics
       containers:
         - name: ksm
-          image: registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.13.0
+          image: "{{ kube_state_metrics_image }}"
           args:
             - --resources=nodes,pods,services,namespaces,persistentvolumeclaims,persistentvolumes,deployments,statefulsets,daemonsets,replicasets,jobs,cronjobs
           ports: [{ containerPort: 8080 }]

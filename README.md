@@ -85,3 +85,7 @@ ansible-playbook 09-backtofirst.yml -e backtofirst_confirm=true
 ### ارتباط نود Teleport
 
 Proxy در حالت listener جداگانه از `10.8.0.1:3080` برای وب و از `10.8.0.1:3024` برای reverse tunnel استفاده می‌کند؛ هر دو باید فقط از شبکه VPN در دسترس باشند. پس از تغییرات `03-access.yml` اجرا و ثبت نودهای worker بررسی می‌شود. اگر ثبت نشد، وضعیت WireGuard، `ss -lnt` روی hub و `journalctl -u teleport` روی هر دو نود را بررسی کنید؛ داده‌های Teleport را بدون بکاپ پاک نکنید.
+
+### تصویر kube-state-metrics
+
+اگر `registry.k8s.io` در سرور قابل دسترسی نیست، بعد از بررسی اصالت و دسترس‌پذیری mirror روی هر دو نود، متغیر `kube_state_metrics_image` را در یک فایل متغیر محلی تنظیم کنید و با `-e @/path/to/file.yml` به همه اجراهای بعدی `04-kubernetes.yml` یا `site.yml` بدهید. نمونهٔ مقدار: `mirror.example/kube-state-metrics/kube-state-metrics:v2.13.0` (نشانی نمونه است). تغییر متغیر پس از اجرای مجدد مرحله 04 اعمال می‌شود؛ صرف pull کردن تصویر در یک نود Deployment را تغییر نمی‌دهد. Mirror شخص ثالث را از نظر اعتماد و digest بررسی کنید.
