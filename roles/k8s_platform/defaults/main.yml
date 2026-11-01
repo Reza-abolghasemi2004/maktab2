@@ -1,3 +1,6 @@
 ---
 # Override with a trusted reachable mirror if registry.k8s.io is blocked.
 kube_state_metrics_image: registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.13.0
+# Keep defaults upstream; override only after verifying a trusted mirror/digest.
+nfs_provisioner_image: registry.k8s.io/sig-storage/nfs-subdir-external-provisioner:v4.0.2
+argocd_image: "quay.io/argoproj/argocd:{{ argocd_version }}"

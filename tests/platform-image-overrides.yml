@@ -1,0 +1,30 @@
+---
+- name: Test platform image overrides
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    argocd_version: v2.12.4
+    argocd_image: mirror.invalid/argocd:v2.12.4
+    nfs_provisioner_image: mirror.invalid/nfs:v4.0.2
+    hub_ip: 10.8.0.1
+    nfs_export_path: /srv/nfs/k8s
+    fixture: |
+      containers:
+        - image: quay.io/argoproj/argocd:v2.12.4
+      initContainers:
+        - image: quay.io/argoproj/argocd:v2.12.4
+  tasks:
+    - name: Render NFS manifest
+      ansible.builtin.set_fact:
+        resources: "{{ lookup('template', '../roles/k8s_platform/templates/nfs-provisioner.yml.j2') | from_yaml_all | list }}"
+        rendered_argocd: "{{ fixture | replace('quay.io/argoproj/argocd:' ~ argocd_version, argocd_image) | from_yaml }}"
+    - name: Select NFS provisioner deployment
+      ansible.builtin.set_fact:
+        nfs_deployment: "{{ resources | selectattr('kind', 'equalto', 'Deployment') | first }}"
+    - name: Ensure both container types and the NFS provisioner use overrides
+      ansible.builtin.assert:
+        that:
+          - nfs_deployment.spec.template.spec.containers[0].image == nfs_provisioner_image
+          - rendered_argocd.containers[0].image == argocd_image
+          - rendered_argocd.initContainers[0].image == argocd_image

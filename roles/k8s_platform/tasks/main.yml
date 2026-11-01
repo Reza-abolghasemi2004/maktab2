@@ -29,10 +29,50 @@
 - name: kube-state-metrics + in-cluster blackbox (for Prometheus)
   kubernetes.core.k8s: { state: present, template: monitoring-agents.yml.j2 }
 
+# Apply a versioned local manifest so image overrides survive every rerun,
+# including init containers. The upstream URL still supplies all other objects.
+- name: Create ArgoCD manifest directory
+  ansible.builtin.file:
+    path: /var/lib/maktab/manifests
+    state: directory
+    mode: "0755"
+
+- name: Download upstream ArgoCD manifest
+  ansible.builtin.get_url:
+    url: "https://raw.githubusercontent.com/argoproj/argo-cd/{{ argocd_version }}/manifests/install.yaml"
+    dest: "/var/lib/maktab/manifests/argocd-{{ argocd_version }}-upstream.yaml"
+    mode: "0644"
+
+- name: Read upstream ArgoCD manifest
+  ansible.builtin.slurp:
+    src: "/var/lib/maktab/manifests/argocd-{{ argocd_version }}-upstream.yaml"
+  register: argocd_upstream_manifest
+
+- name: Ensure ArgoCD image reference is present before replacing it
+  ansible.builtin.assert:
+    that:
+      - "('quay.io/argoproj/argocd:' ~ argocd_version) in (argocd_upstream_manifest.content | b64decode)"
+      - argocd_image | length > 0
+    fail_msg: "ArgoCD upstream image reference was not found; check argocd_version and upstream manifest before proceeding."
+
+- name: Render ArgoCD manifest with selected image
+  ansible.builtin.copy:
+    dest: "/var/lib/maktab/manifests/argocd-{{ argocd_version }}-rendered.yaml"
+    mode: "0644"
+    content: "{{ (argocd_upstream_manifest.content | b64decode) | replace('quay.io/argoproj/argocd:' ~ argocd_version, argocd_image) }}"
+
 - name: Install ArgoCD
-  ansible.builtin.command: >
-    k3s kubectl apply --server-side --force-conflicts -n argocd
-    -f https://raw.githubusercontent.com/argoproj/argo-cd/{{ argocd_version }}/manifests/install.yaml
+  ansible.builtin.command:
+    argv:
+      - k3s
+      - kubectl
+      - apply
+      - --server-side
+      - --force-conflicts
+      - -n
+      - argocd
+      - -f
+      - "/var/lib/maktab/manifests/argocd-{{ argocd_version }}-rendered.yaml"
   environment: { KUBECONFIG: /etc/rancher/k3s/k3s.yaml }
   changed_when: false
 
