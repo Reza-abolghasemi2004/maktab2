@@ -1,0 +1,23 @@
+---
+- name: Test Teleport tunnel template and node matching
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars:
+    inventory_hostname_example: vps1
+    hub_ip: 10.8.0.1
+    private_domain: test.invalid
+    teleport_node_token: test-token
+  tasks:
+    - name: Render Teleport proxy configuration
+      ansible.builtin.set_fact:
+        proxy_config: "{{ lookup('template', '../roles/teleport/templates/teleport-server.yaml.j2') | from_yaml }}"
+    - name: Verify tunnel binds and advertises only the VPN address
+      ansible.builtin.assert:
+        that:
+          - proxy_config.auth_service.proxy_listener_mode == 'separate'
+          - proxy_config.proxy_service.web_listen_addr == '10.8.0.1:3080'
+          - proxy_config.proxy_service.tunnel_listen_addr == '10.8.0.1:3024'
+          - proxy_config.proxy_service.tunnel_public_addr == '10.8.0.1:3024'
+          - "'Host UUID\nvps2 uuid' is search('(?m)^' ~ ('vps2' | regex_escape) ~ '\\s')"
+          - "'Host UUID\nvps20 uuid' is not search('(?m)^' ~ ('vps2' | regex_escape) ~ '\\s')"

@@ -14,3 +14,30 @@
   roles: [teleport]
   any_errors_fatal: true
 
+
+- name: "Task 3 - Verify Teleport tunnel connectivity from worker nodes"
+  hosts: vps:!edge
+  become: true
+  tasks:
+    - name: Wait for the VPN-only Teleport reverse tunnel listener
+      ansible.builtin.wait_for:
+        host: "{{ hub_ip }}"
+        port: 3024
+        timeout: 90
+
+- name: "Task 3 - Verify Teleport worker registration"
+  hosts: edge
+  become: true
+  tasks:
+    - name: Wait for each worker to appear in Teleport
+      ansible.builtin.command: tctl nodes ls
+      register: teleport_registered_nodes
+      changed_when: false
+      retries: 30
+      delay: 5
+      until:
+        - teleport_registered_nodes.rc == 0
+        - teleport_registered_nodes.stdout is search('(?m)^' ~ (item | regex_escape) ~ '\s')
+      loop: "{{ groups['vps'] | difference(groups['edge']) }}"
+      loop_control:
+        label: "{{ item }}"

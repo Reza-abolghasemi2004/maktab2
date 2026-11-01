@@ -373,7 +373,7 @@
       ansible.builtin.shell: "timeout 3 bash -c '</dev/tcp/{{ hub_ip }}/{{ item }}' 2>/dev/null"
       args:
         executable: /bin/bash
-      loop: [2049, 3000, 3025, 3080, 5000, 6443]
+      loop: [2049, 3000, 3024, 3025, 3080, 5000, 6443]
       register: verify_hub_ports
       changed_when: false
       failed_when: false

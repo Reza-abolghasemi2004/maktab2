@@ -7,12 +7,15 @@ auth_service:
   enabled: true
   cluster_name: {{ private_domain }}
   listen_addr: {{ hub_ip }}:3025          # فقط روی VPN
+  proxy_listener_mode: separate           # 3024 tunnel is separate from HTTPS
   authentication: { type: local, second_factor: otp }
   tokens:
     - "node:{{ teleport_node_token }}"
 proxy_service:
   enabled: true
   web_listen_addr: {{ hub_ip }}:3080      # فقط از VPN قابل دسترس است
+  tunnel_listen_addr: {{ hub_ip }}:3024  # reverse tunnel فقط روی VPN
+  tunnel_public_addr: {{ hub_ip }}:3024
   public_addr: teleport.{{ private_domain }}:3080
   https_keypairs:
     - cert_file: /etc/maktab/tls/fullchain.crt
