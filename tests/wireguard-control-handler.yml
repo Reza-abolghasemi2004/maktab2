@@ -1,0 +1,17 @@
+---
+# A local control node may be the same physical host as a VPS; it must not
+# manage the VPS wg-quick@wg0 service when its client config changes.
+- name: Test WireGuard control-node handler
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  handlers:
+    - name: restart wg
+      ansible.builtin.include_tasks: ../roles/wireguard/handlers/main.yml
+  tasks:
+    - name: Simulate changed control-node config
+      ansible.builtin.debug:
+        msg: client config changed
+      changed_when: true
+      notify: restart wg
+    - ansible.builtin.meta: flush_handlers

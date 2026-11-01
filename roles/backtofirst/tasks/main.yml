@@ -141,6 +141,7 @@
     - /root/.ssh/backup_ed25519
     - /root/.ssh/backup_ed25519.pub
     - /etc/systemd/system/bind9.service.d/override.conf
+    - /etc/systemd/system/named.service.d/override.conf
     - /etc/fail2ban/jail.d/maktab.local
     - /etc/default/prometheus-node-exporter
     - /etc/nginx/conf.d/maktab.conf

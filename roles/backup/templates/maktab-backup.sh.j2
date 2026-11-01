@@ -9,6 +9,7 @@ DEST=$ROOT/daily/$TS
 STATE=$ROOT/.state
 PROM={{ node_exporter_textfile_dir }}/maktab_backup.prom
 KUBECTL="k3s kubectl"
+failed=0
 mkdir -p "$DEST" "$STATE" "$ROOT/weekly" "$ROOT/monthly"
 TMP=$(mktemp)
 {
@@ -36,6 +37,7 @@ run_job() { # name  output-file  function
   local size; size=$(stat -c %s "$DEST/$out" 2>/dev/null || echo 0)
   [ "$size" -gt 0 ] || st=0
   record "$name" "$st" "$((end-start))" "$size"
+  [ "$st" = 1 ] || failed=1
 }
 
 job_postgres() {
@@ -79,8 +81,9 @@ find "$ROOT/monthly" -mindepth 1 -maxdepth 1 -type d -mtime +{{ backup_keep_mont
 
 # ───── Offsite copy to vps2 ─────
 start=$(date +%s); st=1
-rsync -aH --delete -e "ssh -i /root/.ssh/backup_ed25519 -o StrictHostKeyChecking=accept-new" \
+rsync -aH --delete --exclude=/.ssh/ -e "ssh -i /root/.ssh/backup_ed25519 -o StrictHostKeyChecking=accept-new" \
   "$ROOT"/ {{ backup_remote_user }}@{{ worker_ip }}:{{ backup_remote_dir }}/ || st=0
+[ "$st" = 1 ] || failed=1
 record offsite_rsync "$st" "$(( $(date +%s) - start ))" "$(du -sb "$ROOT" | cut -f1)"
 
 {
@@ -90,3 +93,6 @@ record offsite_rsync "$st" "$(( $(date +%s) - start ))" "$(du -sb "$ROOT" | cut 
   echo "maktab_backup_monthly_copies $(find "$ROOT/monthly" -mindepth 1 -maxdepth 1 -type d | wc -l)"
 } >> "$TMP"
 chmod 644 "$TMP"; mv "$TMP" "$PROM"
+
+# Preserve metrics even when a job failed, but let systemd report the failure.
+exit "$failed"

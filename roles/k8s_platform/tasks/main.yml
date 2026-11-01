@@ -22,6 +22,10 @@
   environment: { KUBECONFIG: /etc/rancher/k3s/k3s.yaml }
   changed_when: false
 
+- name: Wait for CloudNativePG cluster API to become available
+  ansible.builtin.command: k3s kubectl wait --for=condition=Established crd/clusters.postgresql.cnpg.io --timeout=180s
+  changed_when: false
+
 - name: kube-state-metrics + in-cluster blackbox (for Prometheus)
   kubernetes.core.k8s: { state: present, template: monitoring-agents.yml.j2 }
 
@@ -30,6 +34,10 @@
     k3s kubectl apply --server-side --force-conflicts -n argocd
     -f https://raw.githubusercontent.com/argoproj/argo-cd/{{ argocd_version }}/manifests/install.yaml
   environment: { KUBECONFIG: /etc/rancher/k3s/k3s.yaml }
+  changed_when: false
+
+- name: Wait for the ArgoCD application API to become available
+  ansible.builtin.command: k3s kubectl wait --for=condition=Established crd/applications.argoproj.io --timeout=180s
   changed_when: false
 
 - name: ArgoCD behind nginx (HTTP internally) + NodePort

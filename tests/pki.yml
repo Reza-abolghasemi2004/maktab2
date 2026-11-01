@@ -1,0 +1,34 @@
+---
+- name: Test CA and wildcard generation on disposable files
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    private_domain: test.example.invalid
+    hub_ip: 10.8.0.1
+    worker_ip: 10.8.0.2
+  tasks:
+    - ansible.builtin.tempfile:
+        state: directory
+        prefix: maktab-pki-test-
+      register: pki_test_dir
+    - block:
+        - ansible.builtin.set_fact:
+            pki_dir: "{{ pki_test_dir.path }}"
+        - name: Generate CA and certificate
+          ansible.builtin.include_tasks: ../roles/pki/tasks/ca.yml
+        - name: Check generation is repeatable
+          ansible.builtin.include_tasks: ../roles/pki/tasks/ca.yml
+        - name: Ensure CA was not rotated on an unchanged run
+          ansible.builtin.assert:
+            that: not pki_ca_certificate.changed
+        - name: Remove the test wildcard private key to simulate a new key
+          ansible.builtin.file:
+            path: "{{ pki_dir }}/wildcard.key"
+            state: absent
+        - name: Reissue test wildcard when its key changes
+          ansible.builtin.include_tasks: ../roles/pki/tasks/ca.yml
+      always:
+        - ansible.builtin.file:
+            path: "{{ pki_test_dir.path }}"
+            state: absent

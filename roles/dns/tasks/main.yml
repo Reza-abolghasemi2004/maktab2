@@ -1,10 +1,10 @@
 ---
 - ansible.builtin.apt: { name: [bind9, bind9-utils, bind9-dnsutils], state: present }
 - name: Create systemd drop-in dir
-  ansible.builtin.file: { path: /etc/systemd/system/bind9.service.d, state: directory, mode: "0755" }
+  ansible.builtin.file: { path: /etc/systemd/system/named.service.d, state: directory, mode: "0755" }
 - name: Start bind after WireGuard
   ansible.builtin.copy:
-    dest: /etc/systemd/system/bind9.service.d/override.conf
+    dest: /etc/systemd/system/named.service.d/override.conf
     content: |
       [Unit]
       After=wg-quick@wg0.service
@@ -27,4 +27,4 @@
     mode: "0644"
     validate: "named-checkzone {{ private_domain }} %s"
   notify: reload bind
-- ansible.builtin.service: { name: bind9, state: started, enabled: true }
+- ansible.builtin.service: { name: named, state: started, enabled: true }

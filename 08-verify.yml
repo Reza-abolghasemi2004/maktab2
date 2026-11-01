@@ -10,7 +10,7 @@
   vars:
     verify_units: >-
       {{ ['ssh', 'docker', 'chrony', 'fail2ban', 'teleport', 'prometheus-node-exporter', 'wg-quick@wg0'] +
-         (['bind9', 'nfs-kernel-server', 'k3s', 'nginx', 'maktab-backup.timer']
+         (['named', 'nfs-kernel-server', 'k3s', 'nginx', 'maktab-backup.timer']
           if inventory_hostname in groups['edge'] else ['k3s-agent']) }}
     verify_containers: >-
       {{ ['gitea', 'registry', 'act_runner', 'filebeat']

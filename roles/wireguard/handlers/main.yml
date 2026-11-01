@@ -1,3 +1,4 @@
 ---
 - name: restart wg
   ansible.builtin.service: { name: wg-quick@wg0, state: restarted }
+  when: "'vps' in group_names"

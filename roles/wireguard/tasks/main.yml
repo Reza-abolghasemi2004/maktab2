@@ -9,6 +9,7 @@
     umask 077
     wg genkey | tee {{ wg_key_dir }}/private.key | wg pubkey > {{ wg_key_dir }}/public.key
   args: { creates: "{{ wg_key_dir }}/private.key" }
+  no_log: true
 - ansible.builtin.slurp: { src: "{{ wg_key_dir }}/private.key" }
   register: wg_priv
   no_log: true

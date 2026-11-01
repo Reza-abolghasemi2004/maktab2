@@ -1,5 +1,5 @@
 ---
 - name: restart bind
-  ansible.builtin.service: { name: bind9, state: restarted }
+  ansible.builtin.service: { name: named, state: restarted }
 - name: reload bind
-  ansible.builtin.service: { name: bind9, state: reloaded }
+  ansible.builtin.service: { name: named, state: reloaded }

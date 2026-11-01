@@ -1,12 +1,26 @@
 ---
 - ansible.builtin.stat: { path: "{{ repos_dir }}/{{ repo }}/.git" }
   register: repo_seeded
+- name: "Check for an interrupted initial seed of {{ repo }}"
+  ansible.builtin.stat:
+    path: "{{ repos_dir }}/.seeding-{{ repo }}"
+  register: seed_in_progress
+
+- name: "Mark new initial seed of {{ repo }} before writing files"
+  ansible.builtin.file:
+    path: "{{ repos_dir }}/.seeding-{{ repo }}"
+    state: touch
+    mode: "0600"
+    modification_time: preserve
+    access_time: preserve
+  when: not repo_seeded.stat.exists or seed_in_progress.stat.exists
+
 - name: "Ensure local repository root exists for {{ repo }}"
   ansible.builtin.file:
     path: "{{ repos_dir }}/{{ repo }}"
     state: directory
     mode: "0750"
-  when: not repo_seeded.stat.exists
+  when: not repo_seeded.stat.exists or seed_in_progress.stat.exists
 
 - name: "Ensure parent directories for seed files exist for {{ repo }}"
   ansible.builtin.file:
@@ -17,7 +31,7 @@
   loop_control:
     label: "{{ item.path }}"
   when:
-    - not repo_seeded.stat.exists
+    - not repo_seeded.stat.exists or seed_in_progress.stat.exists
     - item.state == 'file'
     - (item.path | dirname) != '.'
 
@@ -28,16 +42,22 @@
     mode: "0644"
   loop: "{{ query('community.general.filetree', role_path ~ '/templates/repo-' ~ repo) }}"
   loop_control: { label: "{{ item.path }}" }
-  when: not repo_seeded.stat.exists and item.state == 'file'
+  when: (not repo_seeded.stat.exists or seed_in_progress.stat.exists) and item.state == 'file'
 - name: "Commit and push {{ repo }} to Gitea"
   ansible.builtin.shell: |
     set -e
     cd {{ repos_dir }}/{{ repo }}
-    git init -q -b main
+    if [ ! -d .git ]; then git init -q -b main; fi
     git config user.name ansible
     git config user.email "ansible@{{ private_domain }}"
     git add -A
-    git commit -q -m "Initial seed from Ansible"
+    if ! git diff --cached --quiet; then git commit -q -m "Initial seed from Ansible"; fi
     git push -q "http://{{ gitea_admin_user }}:{{ gitea_admin_password }}@{{ hub_ip }}:3000/{{ gitea_org }}/{{ repo }}.git" HEAD:main
-  when: not repo_seeded.stat.exists
+  when: not repo_seeded.stat.exists or seed_in_progress.stat.exists
   no_log: true
+
+- name: "Mark initial seed of {{ repo }} complete after successful push"
+  ansible.builtin.file:
+    path: "{{ repos_dir }}/.seeding-{{ repo }}"
+    state: absent
+  when: not repo_seeded.stat.exists or seed_in_progress.stat.exists

@@ -3,6 +3,7 @@
 - ansible.builtin.file: { path: "{{ pki_dir }}", state: directory, mode: "0700" }
 
 - community.crypto.openssl_privatekey: { path: "{{ pki_dir }}/ca.key", size: 4096 }
+  register: pki_ca_key
 - community.crypto.openssl_csr_pipe:
     privatekey_path: "{{ pki_dir }}/ca.key"
     common_name: "Maktab Internal CA"
@@ -17,8 +18,11 @@
     privatekey_path: "{{ pki_dir }}/ca.key"
     provider: selfsigned
     selfsigned_not_after: "+3650d"
+    force: "{{ pki_ca_key.changed }}"
+  register: pki_ca_certificate
 
 - community.crypto.openssl_privatekey: { path: "{{ pki_dir }}/wildcard.key", size: 2048 }
+  register: pki_wildcard_key
 - community.crypto.openssl_csr_pipe:
     privatekey_path: "{{ pki_dir }}/wildcard.key"
     common_name: "*.{{ private_domain }}"
@@ -36,3 +40,32 @@
     ownca_path: "{{ pki_dir }}/ca.crt"
     ownca_privatekey_path: "{{ pki_dir }}/ca.key"
     ownca_not_after: "+825d"
+    force: "{{ pki_wildcard_key.changed or pki_ca_certificate.changed }}"
+
+- name: Check certificate and key public keys match
+  community.crypto.openssl_privatekey_info:
+    path: "{{ pki_dir }}/{{ item }}.key"
+  loop: [ca, wildcard]
+  register: pki_key_info
+  no_log: true
+
+- name: Read generated certificate public keys
+  community.crypto.x509_certificate_info:
+    path: "{{ pki_dir }}/{{ item }}.crt"
+  loop: [ca, wildcard]
+  register: pki_cert_info
+
+- name: Refuse mismatched certificate and private key pairs
+  ansible.builtin.assert:
+    that:
+      - pki_key_info.results[item].public_key == pki_cert_info.results[item].public_key
+    fail_msg: >-
+      Certificate and private key for {{ ['ca', 'wildcard'][item] }} do not match.
+      Restore the matching files from backup, or deliberately rotate the CA and
+      certificates before deploying; do not copy an unrelated key over a live CA.
+  loop: [0, 1]
+
+- name: Verify wildcard certificate is signed by the current CA
+  ansible.builtin.command:
+    argv: [openssl, verify, -CAfile, "{{ pki_dir }}/ca.crt", "{{ pki_dir }}/wildcard.crt"]
+  changed_when: false
