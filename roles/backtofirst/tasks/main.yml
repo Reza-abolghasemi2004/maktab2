@@ -17,23 +17,8 @@
 - name: Gather service state
   ansible.builtin.service_facts:
 
-# service_facts includes stale/not-found units and does not list timers.
-- name: Check which deployment systemd units are actually loaded
-  ansible.builtin.command:
-    argv: [systemctl, show, --property=LoadState, --value, "{{ item }}"]
-  loop:
-    - maktab-backup.timer
-    - maktab-backup.service
-    - teleport.service
-    - prometheus-node-exporter.service
-    - nginx.service
-    - bind9.service
-    - named.service
-    - nfs-server.service
-    - wg-quick@wg0.service
-  register: backtofirst_units
-  changed_when: false
-  failed_when: item.rc != 0 and (item.stdout | trim) != 'not-found'
+- name: Probe deployment systemd units
+  ansible.builtin.include_tasks: probe_units.yml
 
 - name: Stop loaded deployment services and backup timer
   ansible.builtin.systemd:

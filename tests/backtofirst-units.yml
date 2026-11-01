@@ -1,0 +1,43 @@
+---
+# Safe local regression test: never calls the real systemctl.
+- name: Test cleanup unit probes
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Create temporary directory for fake systemctl
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: backtofirst-test-
+      register: test_dir
+
+    - block:
+        - name: Install fake systemctl
+          ansible.builtin.copy:
+            dest: "{{ test_dir.path }}/systemctl"
+            mode: '0755'
+            content: |
+              #!/bin/sh
+              case "$4" in
+                bind9.service) echo not-found; exit 1 ;;
+                *) echo loaded; exit 0 ;;
+              esac
+
+        - name: Exercise actual probe task with loaded and missing units
+          block:
+            - ansible.builtin.include_tasks: ../roles/backtofirst/tasks/probe_units.yml
+          environment:
+            PATH: "{{ test_dir.path }}:/usr/bin:/bin"
+
+        - name: Verify probe results
+          ansible.builtin.assert:
+            that:
+              - backtofirst_units.results | length == 9
+              - (backtofirst_units.results | selectattr('stdout', 'equalto', 'not-found') | list | length) == 1
+              - (backtofirst_units.results | selectattr('stdout', 'equalto', 'loaded') | list | length) == 8
+              - (backtofirst_units.results | selectattr('failed', 'equalto', true) | list | length) == 0
+      always:
+        - name: Remove temporary test files
+          ansible.builtin.file:
+            path: "{{ test_dir.path }}"
+            state: absent
