@@ -2,16 +2,20 @@
 # Managed by Ansible
 # daily/ (Ns روز)  weekly/ (یکشنبه‌ها)  monthly/ (اول ماه)  → سپس rsync به vps2
 set -o pipefail
+umask 077
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 ROOT={{ backup_root }}
 TS=$(date +%F)
-DEST=$ROOT/daily/$TS
 STATE=$ROOT/.state
 PROM={{ node_exporter_textfile_dir }}/maktab_backup.prom
 KUBECTL="k3s kubectl"
 failed=0
-mkdir -p "$DEST" "$STATE" "$ROOT/weekly" "$ROOT/monthly"
-TMP=$(mktemp)
+mkdir -p "$ROOT/daily" "$STATE" "$ROOT/weekly" "$ROOT/monthly" || exit 1
+# Avoid concurrent runs and never truncate an existing daily or hard-linked snapshot.
+exec 9>"$STATE/backup.lock" || exit 1
+flock -n 9 || { echo "Backup already running" >&2; exit 1; }
+DEST=$(mktemp -d "$ROOT/daily/$TS-XXXXXX") || exit 1
+TMP=$(mktemp) || exit 1
 {
   echo "# TYPE maktab_backup_job_status gauge"
   echo "# TYPE maktab_backup_last_success_timestamp_seconds gauge"
@@ -73,8 +77,16 @@ run_job k3s_state  k3s-state.db.gz     job_k3s_state
 run_job configs    configs.tar.gz      job_configs
 
 # ───── Retention (GFS): daily / weekly / monthly ─────
-if [ "$(date +%u)" = 7 ]; then W=$ROOT/weekly/$(date +%G-W%V); rm -rf "$W"; cp -al "$DEST" "$W"; fi
-if [ "$(date +%d)" = 01 ]; then M=$ROOT/monthly/$(date +%Y-%m); rm -rf "$M"; cp -al "$DEST" "$M"; fi
+# Preserve the first successful weekly/monthly snapshot; never replace it
+# with a failed or repeated run. Daily output is unique for every attempt.
+if [ "$failed" = 0 ] && [ "$(date +%u)" = 7 ]; then
+  W=$ROOT/weekly/$(date +%G-W%V)
+  if [ ! -e "$W" ]; then cp -al "$DEST" "$W" || failed=1; fi
+fi
+if [ "$failed" = 0 ] && [ "$(date +%d)" = 01 ]; then
+  M=$ROOT/monthly/$(date +%Y-%m)
+  if [ ! -e "$M" ]; then cp -al "$DEST" "$M" || failed=1; fi
+fi
 find "$ROOT/daily"   -mindepth 1 -maxdepth 1 -type d -mtime +{{ backup_keep_daily }}   -exec rm -rf {} +
 find "$ROOT/weekly"  -mindepth 1 -maxdepth 1 -type d -mtime +{{ backup_keep_weekly }}  -exec rm -rf {} +
 find "$ROOT/monthly" -mindepth 1 -maxdepth 1 -type d -mtime +{{ backup_keep_monthly }} -exec rm -rf {} +
