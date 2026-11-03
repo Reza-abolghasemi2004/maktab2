@@ -59,3 +59,7 @@ platform_panels:
     unit: bytes
     legend: !unsafe "{{job_name}}"
     expr: 'maktab_backup_size_bytes'
+
+# Periodic, point-in-time report complements (does not replace) Alertmanager.
+telegram_status_report_enabled: true
+telegram_status_report_interval_seconds: 7200

@@ -135,6 +135,10 @@
     - /etc/systemd/system/teleport.service
     - /var/lib/teleport
     - /root/teleport-admin-invite.txt
+    - /etc/systemd/system/maktab-telegram-report.service
+    - /etc/systemd/system/maktab-telegram-report.timer
+    - /usr/local/libexec/maktab-telegram-report.py
+    - /etc/maktab/telegram-status-report.json
     - /etc/systemd/system/maktab-backup.service
     - /etc/systemd/system/maktab-backup.timer
     - /usr/local/sbin/maktab-backup.sh

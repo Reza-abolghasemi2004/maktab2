@@ -1,0 +1,24 @@
+---
+- name: Verify Telegram report configuration renders safely
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    telegram_bot_token: test-token
+    telegram_chat_id: 1234
+    wg_ip: 10.8.0.2
+    probe_http_targets: ['https://example.invalid']
+    probe_tcp_host_targets: ['10.8.0.1:5000']
+    probe_tcp_k8s_targets: ['redis.data.svc.cluster.local:6379']
+  tasks:
+    - name: Render config
+      ansible.builtin.set_fact:
+        config: "{{ lookup('template', '../roles/monitoring/templates/telegram-status-report.json.j2') | from_json }}"
+    - name: Assert probe and secret settings
+      ansible.builtin.assert:
+        that:
+          - config.chat_id == 1234
+          - config.bot_token == 'test-token'
+          - config.expected_probes | length == 3
+          - config.expected_probes[0] == ['blackbox_http', 'https://example.invalid']
+          - config.backup_jobs | length == 8

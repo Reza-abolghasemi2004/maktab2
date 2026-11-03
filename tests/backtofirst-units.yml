@@ -32,9 +32,9 @@
         - name: Verify probe results
           ansible.builtin.assert:
             that:
-              - backtofirst_units.results | length == 9
+              - backtofirst_units.results | length == 11
               - (backtofirst_units.results | selectattr('stdout', 'equalto', 'not-found') | list | length) == 1
-              - (backtofirst_units.results | selectattr('stdout', 'equalto', 'loaded') | list | length) == 8
+              - (backtofirst_units.results | selectattr('stdout', 'equalto', 'loaded') | list | length) == 10
               - (backtofirst_units.results | selectattr('failed', 'equalto', true) | list | length) == 0
       always:
         - name: Remove temporary test files

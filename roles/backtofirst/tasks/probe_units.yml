@@ -4,6 +4,8 @@
   ansible.builtin.command:
     argv: [systemctl, show, --property=LoadState, --value, "{{ item }}"]
   loop:
+    - maktab-telegram-report.timer
+    - maktab-telegram-report.service
     - maktab-backup.timer
     - maktab-backup.service
     - teleport.service

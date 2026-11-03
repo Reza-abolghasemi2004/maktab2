@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodic Maktab Telegram monitoring summary
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec={{ telegram_status_report_interval_seconds | int }}s
+Unit=maktab-telegram-report.service
+
+[Install]
+WantedBy=timers.target

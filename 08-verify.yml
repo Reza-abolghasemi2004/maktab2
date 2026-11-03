@@ -11,7 +11,12 @@
     verify_units: >-
       {{ ['ssh', 'docker', 'chrony', 'fail2ban', 'teleport', 'prometheus-node-exporter', 'wg-quick@wg0'] +
          (['named', 'nfs-kernel-server', 'k3s', 'nginx', 'maktab-backup.timer']
-          if inventory_hostname in groups['edge'] else ['k3s-agent']) }}
+          if inventory_hostname in groups['edge'] else ['k3s-agent']) +
+         (['maktab-telegram-report.timer'] if inventory_hostname in groups['monitoring']
+          and (telegram_status_report_enabled | default(true) | bool)
+          and (alert_channel | default('') == 'telegram')
+          and (telegram_bot_token | default('') | trim not in ['', 'CHANGE_ME'])
+          and (telegram_chat_id | default(0) | int != 0) else []) }}
     verify_containers: >-
       {{ ['gitea', 'registry', 'act_runner', 'filebeat']
          if inventory_hostname in groups['edge'] else

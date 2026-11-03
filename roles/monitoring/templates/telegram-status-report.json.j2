@@ -1,0 +1,8 @@
+{% set ns = namespace(probes=[], nodes=[]) %}
+{% for t in probe_http_targets %}{% set ns.probes = ns.probes + [['blackbox_http', t]] %}{% endfor %}
+{% for t in probe_tcp_host_targets %}{% set ns.probes = ns.probes + [['blackbox_tcp_host', t]] %}{% endfor %}
+{% for t in probe_tcp_k8s_targets %}{% set ns.probes = ns.probes + [['blackbox_tcp_k8s', t]] %}{% endfor %}
+{% for h in groups['vps'] %}{% set ns.nodes = ns.nodes + [{'name': h, 'instance': hostvars[h].wg_ip ~ ':9100'}] %}{% endfor %}
+{{ {'bot_token': telegram_bot_token, 'chat_id': telegram_chat_id | int,
+    'prometheus_url': 'http://' ~ wg_ip ~ ':9090', 'expected_probes': ns.probes,
+    'nodes': ns.nodes, 'backup_jobs': ['postgres', 'mariadb', 'gitea', 'wordpress', 'registry', 'k3s_state', 'configs', 'offsite_rsync']} | to_json }}

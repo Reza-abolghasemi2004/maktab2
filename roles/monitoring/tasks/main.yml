@@ -86,3 +86,85 @@
   retries: 12
   delay: 5
   until: alertmanager_ready.status | default(0) == 200
+
+- name: Validate periodic report interval
+  ansible.builtin.assert:
+    that:
+      - telegram_status_report_interval_seconds | int >= 300
+    fail_msg: "Telegram status report interval must be at least 300 seconds."
+  when: telegram_status_report_enabled | bool
+
+- name: Check for a previously installed Telegram report timer
+  ansible.builtin.stat:
+    path: /etc/systemd/system/maktab-telegram-report.timer
+  register: telegram_report_timer_file
+
+- name: Stop the periodic Telegram report when disabled or credentials are unavailable
+  ansible.builtin.systemd:
+    name: maktab-telegram-report.timer
+    state: stopped
+    enabled: false
+  when:
+    - telegram_report_timer_file.stat.exists
+    - not (telegram_status_report_enabled | bool and alert_channel == 'telegram' and alert_notifications_configured | bool)
+
+- name: Remove stored Telegram report credentials when reporting is disabled
+  ansible.builtin.file:
+    path: /etc/maktab/telegram-status-report.json
+    state: absent
+  when: not (telegram_status_report_enabled | bool and alert_channel == 'telegram' and alert_notifications_configured | bool)
+  no_log: true
+
+- name: Install periodic Telegram status reporting
+  when:
+    - telegram_status_report_enabled | bool
+    - alert_channel == 'telegram'
+    - alert_notifications_configured | bool
+  block:
+    - name: Create report directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop: [/usr/local/libexec]
+
+    - name: Ensure report configuration directory exists
+      ansible.builtin.file:
+        path: /etc/maktab
+        state: directory
+
+    - name: Install Telegram report program
+      ansible.builtin.copy:
+        src: telegram-status-report.py
+        dest: /usr/local/libexec/maktab-telegram-report.py
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Store report configuration and Telegram credentials
+      ansible.builtin.template:
+        src: telegram-status-report.json.j2
+        dest: /etc/maktab/telegram-status-report.json
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Install report service and timer
+      ansible.builtin.template:
+        src: "{{ item }}.j2"
+        dest: "/etc/systemd/system/{{ item }}"
+        mode: "0644"
+      loop: [maktab-telegram-report.service, maktab-telegram-report.timer]
+      register: telegram_report_units
+
+    - name: Reload systemd for updated report units
+      ansible.builtin.systemd:
+        daemon_reload: true
+      when: telegram_report_units.changed
+
+    - name: Enable periodic Telegram status report
+      ansible.builtin.systemd:
+        name: maktab-telegram-report.timer
+        enabled: true
+        state: "{{ 'restarted' if telegram_report_units.changed else 'started' }}"
