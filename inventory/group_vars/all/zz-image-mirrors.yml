@@ -1,0 +1,7 @@
+---
+# Reachable mirrors used by this deployment. They are third-party mirrors;
+# verify provenance and pin trusted digests before production use.
+# Override these in local inventory or with -e if using a different registry.
+kube_state_metrics_image: m.daocloud.io/registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.13.0
+nfs_provisioner_image: m.daocloud.io/registry.k8s.io/sig-storage/nfs-subdir-external-provisioner:v4.0.2
+argocd_image: "m.daocloud.io/quay.io/argoproj/argocd:{{ argocd_version }}"

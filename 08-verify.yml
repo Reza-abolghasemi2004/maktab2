@@ -292,15 +292,27 @@
         set -euo pipefail
         metrics="{{ node_exporter_textfile_dir }}/maktab_backup.prom"
         test -s "$metrics" || { echo "BACKUP_METRICS_MISSING"; exit 2; }
-        awk '
+        awk -v now="$(date +%s)" -v max_age="{{ verify_backup_max_age_seconds | default(93600) | int }}" '
           /^maktab_backup_job_status\{/ {
             total++
-            if ($2 != 1) { print; bad=1 }
+            name=$1; sub(/^.*job_name="/, "", name); sub(/".*$/, "", name)
+            jobs[name]++
+            if ($2 != 1) { print "FAILED: " $0; bad=1 }
+          }
+          /^maktab_backup_last_success_timestamp_seconds\{/ {
+            name=$1; sub(/^.*job_name="/, "", name); sub(/".*$/, "", name)
+            seen[name]++; last[name]=$2
           }
           END {
             if (total != 8) {
               printf "EXPECTED_8_BACKUP_JOB_METRICS_GOT_%d\n", total
               bad=1
+            }
+            for (name in jobs) {
+              if (jobs[name] != 1 || seen[name] != 1 || last[name] !~ /^[0-9]+$/ || last[name] <= 0 || last[name] > now || now-last[name] > max_age) {
+                printf "BACKUP_TIMESTAMP_INVALID_OR_STALE job=%s timestamp=%s\n", name, last[name]
+                bad=1
+              }
             }
             exit bad
           }
@@ -361,7 +373,7 @@
           runner_registered={{ verify_runner_registration.stat.exists | default(false) }};
           backup_script_syntax_rc={{ verify_backup_syntax.rc | default(1) }};
           backup_destination_rc={{ verify_backup_destination.rc | default(1) }};
-          backup_metrics_rc={{ verify_backup_metrics.rc | default(1) }} (actual backup run and restore must also be tested).
+          backup_metrics_rc={{ verify_backup_metrics.rc | default(1) }}; backup issues={{ verify_backup_metrics.stdout | default('') }} (restore must also be tested).
         success_msg: "Gitea, Registry, Git remotes, internal HTTPS endpoints, Teleport and public TLS checks passed."
 
 - name: Verify worker-to-hub connectivity, NFS read/write and observability endpoints

@@ -1,0 +1,4 @@
+# New private material must never be added. Existing tracked files need separate
+# history cleanup and coordinated credential rotation; ignore does not untrack.
+.secrets/
+*.retry

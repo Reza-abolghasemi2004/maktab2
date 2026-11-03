@@ -1,0 +1,121 @@
+---
+# Explicit disaster-recovery operation. Does not build or verify application source.
+- name: Recover missing private registry images from approved local archives
+  hosts: edge
+  become: true
+  gather_facts: false
+  vars:
+    app_image_recovery_confirmed: false
+    app_image_recovery_tag: recovery-20261021
+    app_image_recovery_archives:
+      - name: backend
+        path: /tmp/backend.tar
+        sha256: 5fe0237f46bde75f51927acd204683f22c1ad17365cdd4149ae3b2f0597b67b9
+      - name: frontend
+        path: /tmp/frontend.tar
+        sha256: fae21bcd984047bf5d4f45fc26bc81370b06d4e573d92de2837583d0406518f4
+  tasks:
+    - name: Require explicit approval of the archive provenance
+      ansible.builtin.assert:
+        that:
+          - app_image_recovery_confirmed | bool
+          - app_image_recovery_tag is match('^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$')
+        fail_msg: "Recovery is opt-in. Verify archives and set app_image_recovery_confirmed=true; no image tags will be overwritten."
+
+    - name: Check both recovery and latest tags before loading archives
+      ansible.builtin.uri:
+        url: "http://{{ registry_endpoint }}/v2/{{ gitea_org }}/{{ item.0.name }}/manifests/{{ item.1 }}"
+        method: HEAD
+        user: "{{ registry_user }}"
+        password: "{{ registry_password }}"
+        force_basic_auth: true
+        status_code: [200, 404]
+        headers:
+          Accept: "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.index.v1+json"
+      loop: "{{ app_image_recovery_archives | product([app_image_recovery_tag, 'latest']) | list }}"
+      register: image_recovery_existing
+      no_log: true
+
+    - name: Select missing tags without changing existing registry content
+      ansible.builtin.set_fact:
+        image_recovery_missing: "{{ image_recovery_existing.results | selectattr('status', 'equalto', 404) | list }}"
+
+    - name: Report when no recovery is necessary
+      ansible.builtin.debug:
+        msg: "All requested tags already exist. No archives were loaded and no tags were overwritten; existing provenance is not verified."
+      when: image_recovery_missing | length == 0
+
+    - name: Recover only missing tags from approved archives
+      when: image_recovery_missing | length > 0
+      block:
+        - name: Check approved archive digests
+          ansible.builtin.stat:
+            path: "{{ item.path }}"
+            checksum_algorithm: sha256
+          loop: "{{ app_image_recovery_archives }}"
+          register: image_recovery_archive_stats
+          loop_control: { label: "{{ item.name }}" }
+
+        - name: Require matching archive digests
+          ansible.builtin.assert:
+            that:
+              - item.stat.isreg | default(false)
+              - item.stat.checksum | default('') == item.item.sha256
+            fail_msg: "Archive missing or checksum mismatch for {{ item.item.name }}."
+          loop: "{{ image_recovery_archive_stats.results }}"
+          loop_control: { label: "{{ item.item.name }}" }
+
+        - name: Read archive manifests without loading the images
+          ansible.builtin.command:
+            argv: [tar, -xOf, "{{ item.path }}", manifest.json]
+          loop: "{{ app_image_recovery_archives }}"
+          register: image_recovery_manifests
+          changed_when: false
+          loop_control: { label: "{{ item.name }}" }
+
+        - name: Require each archive to contain the expected single image tag
+          ansible.builtin.assert:
+            that:
+              - (item.stdout | from_json | length) == 1
+              - (registry_endpoint ~ '/' ~ gitea_org ~ '/' ~ item.item.name ~ ':latest') in ((item.stdout | from_json)[0].RepoTags | default([]))
+            fail_msg: "Archive tag does not match the expected image for {{ item.item.name }}."
+          loop: "{{ image_recovery_manifests.results }}"
+          loop_control: { label: "{{ item.item.name }}" }
+
+        - name: Create temporary Docker authentication directory
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: maktab-recovery-
+          register: image_recovery_docker_config
+
+        - name: Publish approved recovery images without retaining Docker credentials
+          block:
+            - name: Authenticate to the registry
+              ansible.builtin.command:
+                argv: [docker, --config, "{{ image_recovery_docker_config.path }}", login, "{{ registry_endpoint }}", --username, "{{ registry_user }}", --password-stdin]
+                stdin: "{{ registry_password }}"
+              no_log: true
+              changed_when: false
+
+            - name: Load approved image archives
+              ansible.builtin.command:
+                argv: [docker, load, -i, "{{ item.path }}"]
+              loop: "{{ app_image_recovery_archives }}"
+              loop_control: { label: "{{ item.name }}" }
+
+            - name: Tag recovery images
+              ansible.builtin.command:
+                argv: [docker, tag, "{{ registry_endpoint }}/{{ gitea_org }}/{{ item.name }}:latest", "{{ registry_endpoint }}/{{ gitea_org }}/{{ item.name }}:{{ app_image_recovery_tag }}"]
+              loop: "{{ app_image_recovery_archives }}"
+              loop_control: { label: "{{ item.name }}" }
+
+            - name: Publish recovery and latest tags
+              ansible.builtin.command:
+                argv: [docker, --config, "{{ image_recovery_docker_config.path }}", push, "{{ registry_endpoint }}/{{ gitea_org }}/{{ item.item.0.name }}:{{ item.item.1 }}"]
+              loop: "{{ image_recovery_missing }}"
+              loop_control: { label: "{{ item.item.0.name }}:{{ item.item.1 }}" }
+          always:
+            - name: Remove temporary Docker authentication directory
+              ansible.builtin.file:
+                path: "{{ image_recovery_docker_config.path }}"
+                state: absent

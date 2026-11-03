@@ -76,6 +76,34 @@
   environment: { KUBECONFIG: /etc/rancher/k3s/k3s.yaml }
   changed_when: false
 
+# A StatefulSet rolling update can wait indefinitely on an old unready Pod.
+# Only replace this specific old, image-pull-failing Pod after applying the new
+# template; do not delete healthy controllers or workloads with user data.
+- name: Inspect ArgoCD application controller pod
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Pod
+    namespace: argocd
+    name: argocd-application-controller-0
+  register: argocd_controller_pod
+
+- name: Replace old ArgoCD controller pod stuck pulling its previous image
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Pod
+    namespace: argocd
+    name: argocd-application-controller-0
+  when:
+    - argocd_controller_pod.resources | length == 1
+    - (argocd_controller_pod.resources[0].metadata.ownerReferences | default([]) | selectattr('kind', 'equalto', 'StatefulSet') | selectattr('name', 'equalto', 'argocd-application-controller') | list | length) == 1
+    - argocd_controller_pod.resources[0].spec.containers | length == 1
+    - argocd_controller_pod.resources[0].spec.containers[0].image != argocd_image
+    - argocd_controller_pod.resources[0].status.containerStatuses | default([]) | length == 1
+    - not (argocd_controller_pod.resources[0].status.containerStatuses[0].ready | default(false) | bool)
+    - argocd_controller_pod.resources[0].status.containerStatuses[0].state.waiting.reason | default('') in ['ImagePullBackOff', 'ErrImagePull']
+
 - name: Wait for the ArgoCD application API to become available
   ansible.builtin.command: k3s kubectl wait --for=condition=Established crd/applications.argoproj.io --timeout=180s
   changed_when: false
