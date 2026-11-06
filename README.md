@@ -1,5 +1,7 @@
 # Maktab Sharif – SRS DevOps Project (Ansible)
 
+مستند جامع فارسی معماری، همهٔ فایل‌ها، راهنمای دفاع، عیب‌یابی و محدودیت‌های تأییدنشده: [docs/PROJECT-DEFENSE-FA.md](docs/PROJECT-DEFENSE-FA.md).
+
 ## منابع و نقش‌ها
 
 | ماشین | مشخصات | نقش |
